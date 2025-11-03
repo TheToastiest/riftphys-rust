@@ -1,0 +1,13 @@
+[package]
+name = "riftphys-benchtests"
+version = "0.2.0"
+edition = "2021"
+
+
+[dependencies]
+riftphys-world = { path = "../riftphys-world" }
+riftphys-core  = { path = "../riftphys-core" }
+riftphys-geom  = { path = "../riftphys-geom" }
+riftphys-gravity = {path = "../riftphys-gravity" }
+
+glam = { workspace = true }

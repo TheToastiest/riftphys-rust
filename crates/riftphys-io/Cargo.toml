@@ -1,0 +1,10 @@
+[features]
+vectorsoarus = ["dep:soarus-bridge", "dep:soarus-io"]
+
+[dependencies]
+riftphys-core = { path = "../riftphys-core" }
+riftphys-geom = { path = "../riftphys-geom" }
+
+# Replace these with your absolute paths:
+soarus-bridge = { path = "C:/Users/brinn/RustroverProjects/vectorsoarus/crates/soarus-bridge", optional = true }
+soarus-io     = { path = "C:/Users/brinn/RustroverProjects/vectorsoarus/crates/soarus-io",     optional = true }
