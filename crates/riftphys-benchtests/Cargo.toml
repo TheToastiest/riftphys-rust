@@ -9,5 +9,8 @@ riftphys-world = { path = "../riftphys-world" }
 riftphys-core  = { path = "../riftphys-core" }
 riftphys-geom  = { path = "../riftphys-geom" }
 riftphys-gravity = {path = "../riftphys-gravity" }
+riftphys-viz   = { path = "../riftphys-viz" }
+riftphys-terrain = { path = "../riftphys-terrain" }
+riftphys-melee = { path = "../riftphys-melee" }
 
 glam = { workspace = true }

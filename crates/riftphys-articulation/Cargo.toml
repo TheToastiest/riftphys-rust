@@ -1,0 +1,8 @@
+[package]
+name = "riftphys-articulation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riftphys-core     = { path = "../riftphys-core" }
+riftphys-dynamics = { path = "../riftphys-dynamics" }
