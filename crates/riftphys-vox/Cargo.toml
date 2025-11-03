@@ -1,0 +1,9 @@
+[package]
+name = "riftphys-vox"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riftphys-core = { path = "../riftphys-core" }
+bitvec = { workspace = true }
+glam = { workspace = true }

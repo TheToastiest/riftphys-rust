@@ -6,3 +6,4 @@ edition = "2021"
 [dependencies]
 riftphys-core     = { path = "../riftphys-core" }
 riftphys-dynamics = { path = "../riftphys-dynamics" }
+riftphys-controllers = { path = "../riftphys-controllers" }

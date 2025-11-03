@@ -1,0 +1,23 @@
+[workspace]
+members = [
+    "crates/riftphys-core",
+    "crates/riftphys-geom",
+    "crates/riftphys-collision",
+    "crates/riftphys-dynamics",
+    "crates/riftphys-viz",
+    "crates/riftphys-world",
+    "crates/riftphys-benchtests",
+    "crates/riftphys-gravity",
+    "crates/riftphys-terrain",
+    "crates/riftphys-melee",
+    "crates/riftphys-materials",
+    "crates/riftphys-controllers",
+
+]
+resolver = "2"
+
+[workspace.dependencies]
+glam   = { version = "0.27", default-features = false, features = ["libm"] }
+blake3 = "1.5"
+serde  = { version = "1", features = ["derive"] }
+bitvec = "1.0"

@@ -1,0 +1,15 @@
+[package]
+name = "riftphys-core"
+version = "0.2.0"
+edition = "2021"
+
+[features]
+fixed = []
+serde = ["dep:serde"]
+
+[dependencies]
+glam   = { workspace = true }
+blake3 = { workspace = true }
+serde  = { workspace = true, optional = true }
+
+[build-dependencies]

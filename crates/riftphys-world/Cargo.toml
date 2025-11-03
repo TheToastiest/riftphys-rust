@@ -1,0 +1,18 @@
+[package]
+name = "riftphys-world"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+riftphys-core      = { path = "../riftphys-core" }
+riftphys-geom      = { path = "../riftphys-geom" }
+riftphys-collision = { path = "../riftphys-collision" }
+riftphys-dynamics  = { path = "../riftphys-dynamics" }
+riftphys-viz       = { path = "../riftphys-viz" }
+riftphys-gravity   = { path = "../riftphys-gravity" }
+riftphys-articulation = { path = "../riftphys-articulation" }
+riftphys-terrain = { path = "../riftphys-terrain" }
+riftphys-melee = { path = "../riftphys-melee" }
+riftphys-materials = { path = "../riftphys-materials" }
+riftphys-controllers = { path = "../riftphys-controllers" }
+glam               = { workspace = true }

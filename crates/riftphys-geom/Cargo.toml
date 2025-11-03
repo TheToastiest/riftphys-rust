@@ -1,0 +1,10 @@
+[package]
+name = "riftphys-geom"
+version = "0.2.0"
+edition = "2021"
+
+[dependencies]
+riftphys-core = { path = "../riftphys-core" }
+riftphys-materials = { path = "../riftphys-materials" }
+glam = { workspace = true }
+serde = { workspace = true, optional = true }

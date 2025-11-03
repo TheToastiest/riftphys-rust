@@ -18,7 +18,12 @@ pub struct Joints {
 
 impl Joints {
     pub fn new() -> Self { Self { distance: Vec::new() } }
-
+    pub fn set_distance_params(&mut self, id: JointId, rest: f32, compliance: f32) {
+        if let Some(j) = self.distance.get_mut(id.0 as usize) {
+            j.rest = rest;
+            j.compliance = compliance;
+        }
+    }
     pub fn add_distance_joint(
         &mut self,
         a: BodyId, b: BodyId,

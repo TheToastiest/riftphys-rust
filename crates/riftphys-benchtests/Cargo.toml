@@ -3,6 +3,13 @@ name = "riftphys-benchtests"
 version = "0.2.0"
 edition = "2021"
 
+[[bin]]
+name = "epoch_swap"
+path = "src/epoch_swap.rs"
+
+[[bin]]
+name = "bench_perf"
+path = "src/bench_perf.rs"
 
 [dependencies]
 riftphys-world = { path = "../riftphys-world" }
