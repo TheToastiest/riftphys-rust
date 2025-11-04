@@ -12,7 +12,10 @@ members = [
     "crates/riftphys-melee",
     "crates/riftphys-materials",
     "crates/riftphys-controllers",
-
+    "crates/riftphys-aero",
+    "crates/riftphys-acceleration",
+    "crates/riftphys-vehicles",
+    "tools/riftphys-vis-tool",
 ]
 resolver = "2"
 

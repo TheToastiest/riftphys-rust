@@ -19,5 +19,8 @@ riftphys-gravity = {path = "../riftphys-gravity" }
 riftphys-viz   = { path = "../riftphys-viz" }
 riftphys-terrain = { path = "../riftphys-terrain" }
 riftphys-melee = { path = "../riftphys-melee" }
-
+riftphys-aero = { path = "../riftphys-aero" }
+riftphys-acceleration = { path = "../riftphys-acceleration" }
+riftphys-vehicles = { path = "../riftphys-vehicles" }
+riftphys-controllers = { path = "../riftphys-controllers" }
 glam = { workspace = true }

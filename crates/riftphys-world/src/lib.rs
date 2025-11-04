@@ -1,3 +1,6 @@
+mod det_harness;
+use riftphys_controllers::{GuardCtrl, BalanceCtrl, BalanceParams};
+
 use riftphys_core::{
     Scalar, Vec3, Isometry, Velocity, BodyId, ColliderId, StepStats, StepHasher, hash_vec3, hash_quat,
     StepStage, XorShift64, EpochDescriptor, epoch_id, JointId,
@@ -10,11 +13,17 @@ use riftphys_dynamics::{Bodies, BodyDesc};
 use riftphys_viz::{ScheduleRecorder, DebugSettings, Ledger, LedgerEvent};
 use riftphys_gravity::{GravitySpec, eval as grav_eval, spec_id as gravity_epoch_id};
 use riftphys_articulation::Joints;
+use crate::det_harness::{SimWorld, StepReport, Inputs, InputEvent};
+use riftphys_core::vec3;
 
 use std::collections::BTreeMap;
 use riftphys_terrain::HeightField;
 use riftphys_melee::sweep_sphere_vs_aabb;
-use riftphys_controllers::GuardCtrl;
+use riftphys_core::models::{
+    ModelRegistry, AccelPackHandle, AeroHandle, PropHandle, AeroQuery, PropQuery,
+};
+use riftphys_core::{StepCtx, EpochId};
+use riftphys_vehicles::{VehicleInstance, VehicleParams, WheelParams, AxleInput};
 
 const CCD_MAX_MARGIN: f32 = 1.0e-0; // expand AABBs by min(|v|*dt, CCD_MAX_MARGIN)
 struct GuardInstance { joint: JointId, eff: BodyId, ctrl: GuardCtrl } // eff = shield body
@@ -28,6 +37,11 @@ struct TerrainTileCfg {
 }
 #[derive(Clone, Debug, Default)]
 struct TileEntry { uses: u32 }
+struct BalanceInstance {
+    pelvis: BodyId,
+    left: BodyId,
+    right: BodyId,
+    ctrl: BalanceCtrl }
 
 /* ---------------- Collider & Contact ---------------- */
 #[derive(Copy, Clone, Debug)]
@@ -56,6 +70,15 @@ impl WorldBuilder {
         self.bodies = bodies; self.colliders = colliders; self
     }
     pub fn build(self) -> World { World::with_capacity(self.bodies, self.colliders) }
+}
+#[derive(Copy, Clone, Debug)]
+struct AccelComp {
+    aero: Option<AeroHandle>,
+    prop: Option<PropHandle>,
+    ref_area_m2: f32,
+    throttle01: f32,
+    // If you want per-body forward override; otherwise we infer from pose:
+    forward_dir_world: Option<Vec3>, // default: +X body rotated to world
 }
 
 /* ---------------- World ---------------- */
@@ -88,9 +111,25 @@ pub struct World {
     tile_cfg: TerrainTileCfg,
     tile_cache: BTreeMap<(i32, i32), TileEntry>,
     guards: Vec<GuardInstance>,
+    models: ModelRegistry,
+    accel_comps: Vec<Option<AccelComp>>,
+    balances: Vec<BalanceInstance>,
+
 }
 
 impl World {
+    // Read-only helpers for the viewer/debuggers.
+    pub fn num_bodies(&self) -> u32 { self.bodies.len() as u32 }
+
+    pub fn for_each_collider<F: FnMut(u32, BodyId, &Shape, &Aabb)>(&self, mut f: F) {
+        for (i, c) in self.colliders.iter().enumerate() {
+            f(i as u32, c.body, &c.shape, &c.aabb);
+        }
+    }
+
+    // Handy single-pose reader for generic viewers.
+    pub fn body_pose(&self, id: BodyId) -> Isometry { self.bodies.pose(id.0) }
+
     pub fn with_capacity(bodies: usize, colliders: usize) -> Self {
         let g = Vec3::new(0.0, -9.81, 0.0);
         Self {
@@ -111,9 +150,50 @@ impl World {
             tile_cfg: TerrainTileCfg { tile_cells: UVec2::new(32, 32), y_offset: 0.0 },
             tile_cache: BTreeMap::new(),
             guards: Vec::new(),
+            models: ModelRegistry::new(),
+            accel_comps: vec![None; bodies],
+            balances: Vec::new(),
+
         }
     }
+    pub fn add_balance_controller(
+        &mut self,
+        pelvis: BodyId,
+        left: BodyId,
+        right: BodyId,
+        params: BalanceParams,
+    ) {
+        self.balances.push(BalanceInstance {
+            pelvis, left, right, ctrl: BalanceCtrl::new(params)
+        });
+    }
+    /// Access the registry to register models from benches or game init.
+    pub fn models_mut(&mut self) -> &mut ModelRegistry { &mut self.models }
+    pub fn models(&self) -> &ModelRegistry { &self.models }
 
+    /// Attach/replace an AccelComp on a body.
+    pub fn set_body_accel(
+        &mut self,
+        body: BodyId,
+        aero: Option<AeroHandle>,
+        prop: Option<PropHandle>,
+        ref_area_m2: f32,
+        throttle01: f32,
+        forward_dir_world: Option<Vec3>,
+    ) {
+        let i = body.0 as usize;
+        if self.accel_comps.len() <= i { self.accel_comps.resize(i + 1, None); }
+        self.accel_comps[i] = Some(AccelComp {
+            aero, prop, ref_area_m2, throttle01, forward_dir_world,
+        });
+    }
+
+    /// Optional convenience to update throttle per tick from inputs.
+    pub fn set_body_throttle(&mut self, body: BodyId, t: f32) {
+        if let Some(Some(ac)) = self.accel_comps.get_mut(body.0 as usize) {
+            ac.throttle01 = t.clamp(0.0, 1.0);
+        }
+    }
     pub fn add_guard_controller(
         &mut self,
         pivot: BodyId,
@@ -214,6 +294,10 @@ impl World {
     pub fn add_body(&mut self, pose: Isometry, vel: Velocity, mass: MassProps, dynamic: bool) -> BodyId {
         let inv_mass = if dynamic { mass.inv_mass } else { 0.0 };
         let id = self.bodies.add(BodyDesc { pose, vel, inv_mass, dynamic });
+        if self.accel_comps.len() <= id as usize {
+            self.accel_comps.resize(id as usize + 1, None);
+        }
+
         BodyId(id)
     }
     pub fn add_collider(&mut self, body: BodyId, shape: Shape, material: Material) -> ColliderId {
@@ -364,15 +448,92 @@ impl World {
                 continue;
             }
 
-            // Fallback: uniform acceleration integrate
+            // Fallback: uniform acceleration integrate + Phase 11 accel pass
             let pose = self.bodies.pose(i);
             let mut vel = self.bodies.vel(i);
-            let a = grav_eval(&self.gravity_proc, pose.pos);
-            vel.lin += a * dt;
+
+            // Gravity (existing)
+            let a_grav = grav_eval(&self.gravity_proc, pose.pos);
+
+            // Phase 11 Accel (post-gravity): aero + propulsion if present
+            let mut a_extra = Vec3::ZERO;
+            if let Some(Some(ac)) = self.accel_comps.get(i as usize) {
+                // Mass from inv_mass; skip statics
+                let inv_m = self.bodies.inv_mass_of(i);
+                if inv_m > 0.0 {
+                    let mass = 1.0 / inv_m;
+
+                    // Forward dir (world): default is +X in body rotated to world
+                    let fwd_w = ac.forward_dir_world.unwrap_or_else(|| pose.rot * Vec3::new(1.0, 0.0, 0.0));
+
+                    // Velocity info
+                    let v_w = vel.lin;
+                    let speed = v_w.length();
+                    let vhat = if speed > 1e-6 { v_w / speed } else { fwd_w };
+
+                    // Very simple α: angle between forward and velocity
+                    let cos_a = fwd_w.dot(vhat).clamp(-1.0, 1.0);
+                    let alpha_rad = cos_a.acos();
+
+                    // Altitude proxy = world Y
+                    let altitude = pose.pos.y;
+
+                    // Build queries
+                    let aq = AeroQuery {
+                        vel_world: [v_w.x, v_w.y, v_w.z],
+                        ang_vel_world: [vel.ang.x, vel.ang.y, vel.ang.z],
+                        orientation: pose.rot,
+                        area: ac.ref_area_m2,
+                        mass,
+                        altitude,
+                        alpha_rad,
+                    };
+                    let pq = PropQuery {
+                        throttle01: ac.throttle01,
+                        forward_dir_world: [fwd_w.x, fwd_w.y, fwd_w.z],
+                        mass,
+                    };
+
+                    // Evaluate models (split for telemetry)
+                    let mut a_aero = Vec3::ZERO;
+                    let mut a_prop = Vec3::ZERO;
+
+                    if let Some(h) = ac.aero {
+                        let a = self.models.aero(h).accel_contrib(
+                            &StepCtx { dt, tick: self.tick, epoch: EpochId(self.epoch_id) }, aq);
+                        a_aero = Vec3::new(a[0], a[1], a[2]);
+                    }
+                    if let Some(h) = ac.prop {
+                        let a = self.models.prop(h).accel_contrib(
+                            &StepCtx { dt, tick: self.tick, epoch: EpochId(self.epoch_id) }, pq);
+                        a_prop = Vec3::new(a[0], a[1], a[2]);
+                    }
+
+                    // Telemetry: estimate thrust/drag forces from the actual accelerations
+                    let v = vel.lin;
+                    let speed = v.length();
+                    if speed > 1e-6 {
+                        let vhat = v / speed;
+                        let a_drag_along = -a_aero.dot(vhat);   // >0 when opposing velocity
+                        let t_est_n = a_prop.length() * mass;   // thrust ≈ |a_prop| * m
+                        let d_est_n = (a_drag_along.max(0.0)) * mass; // drag ≈ opposing aero * m
+                        self.ledger.push(LedgerEvent::AeroProp { id: i, t_n: t_est_n, d_n: d_est_n, speed });
+                    }
+
+                    // Accumulate into the integrator
+                    a_extra += a_aero + a_prop;
+
+                }
+            }
+
+            let a_total = a_grav + a_extra;
+            vel.lin += a_total * dt;
             let new_pos = pose.pos + vel.lin * dt;
+
             self.bodies.set_vel(i, vel);
-            self.ledger.push(LedgerEvent::Integrate { id: i, a, dv: a * dt });
+            self.ledger.push(LedgerEvent::Integrate { id: i, a: a_total, dv: a_total * dt });
             self.bodies.set_pose(i, Isometry { pos: new_pos, rot: pose.rot });
+
         }
 
         // Update AABBs (pre)
@@ -421,6 +582,52 @@ impl World {
                 a: g.eff.0, b: 0, lambda: comp, compliance: comp
             });
         }
+        // --- Balance controllers (Phase 13) ---
+        // We compute a deterministic support point: mean(XZ) of feet that are in contact this tick.
+        // If no foot contacts, we fall back to previous pose (implicitly: zero accel).
+        for b in &mut self.balances {
+            // 1) detect if either foot is in this tick's contacts (XZ support center)
+            let mut acc = 0usize;
+            let mut sx = 0.0f32;
+            let mut sz = 0.0f32;
+            for c in &contacts {
+                let a = self.colliders[c.a_collider].body;
+                let bdy = self.colliders[c.b_collider].body;
+                if a == b.left || a == b.right {
+                    let p = self.bodies.pose(a.0).pos;
+                    sx += p.x; sz += p.z; acc += 1;
+                }
+                if bdy == b.left || bdy == b.right {
+                    let p = self.bodies.pose(bdy.0).pos;
+                    sx += p.x; sz += p.z; acc += 1;
+                }
+            }
+            if acc == 0 { continue; } // no support this tick → do nothing (deterministic)
+
+            let support_xz = glam::Vec2::new(sx / acc as f32, sz / acc as f32);
+            let pelvis_p   = self.bodies.pose(b.pelvis.0).pos;
+            let a_xz       = b.ctrl.step(glam::Vec3::new(pelvis_p.x, pelvis_p.y, pelvis_p.z), support_xz);
+
+            // 2) apply as horizontal acceleration to pelvis (deterministically)
+            let mut v = self.bodies.vel(b.pelvis.0);
+            v.lin.x += a_xz.x * dt;
+            v.lin.z += a_xz.y * dt;
+            // 3) telemetry (deterministic, controller-specific)
+            self.bodies.set_vel(b.pelvis.0, v);
+            self.ledger.push(LedgerEvent::BalanceAccel {
+                id:  b.pelvis.0,
+                ax:  a_xz.x,
+                az:  a_xz.y,
+            });
+
+            // 3) extra telemetry (optional)
+            self.ledger.push(LedgerEvent::Integrate {
+                id: b.pelvis.0,
+                a: Vec3::new(a_xz.x, 0.0, a_xz.y),
+                dv: Vec3::new(a_xz.x * dt, 0.0, a_xz.y * dt),
+            });
+
+        }
 
         // Joints
         self.joints.solve(&mut self.bodies, dt, 4);
@@ -444,7 +651,9 @@ impl World {
             self.print_debug_block(&contacts);
             let _ = self.ledger.write_jsonl("out", self.tick);
         }
-
+        if self.debug.json_every != 0 && (self.tick as u32) % self.debug.json_every == 0 {
+            let _ = self.ledger.write_jsonl("out", self.tick);
+        }
         StepStats { pairs_tested: pairs.len() as u32, contacts: contacts_len, islands: 1 }
     }
 
@@ -529,6 +738,9 @@ impl World {
         let depth = r - dist;
         let normal = if flip {  n } else { -n };
         Some(Contact { a_collider: ci, b_collider: cj, normal, depth })
+    }
+    pub fn set_body_vel(&mut self, id: BodyId, vel: Velocity) {
+        self.bodies.set_vel(id.0, vel);
     }
 
     fn contact_capsule_box(&self, ci: usize, cj: usize) -> Option<Contact> {
@@ -678,7 +890,78 @@ impl World {
             }
         }
     }
+    fn provenance_sums(&self) -> (f32, u32, f32, f32) {
+        let mut imp = 0.0f32;
+        let mut ccd = 0u32;
+        let mut aero = 0.0f32;
+        let mut prop = 0.0f32;
+
+        // If Ledger has no iterator yet, expose one (e.g., `pub fn iter(&self)->impl Iterator<Item=&LedgerEvent>`).
+        for e in self.ledger.iter() {
+            use riftphys_viz::LedgerEvent::*;
+            match *e {
+                CCDHit { .. } => ccd += 1,
+                ImpulseN { jn, .. } => imp += jn.abs(),
+                ImpulseT { jt1, jt2, .. } => imp += (jt1*jt1 + jt2*jt2).sqrt(),
+                AeroProp { t_n, d_n, .. } => { prop += t_n; aero += d_n; }
+                BalanceAccel { ax, az, .. } => {
+                    // fold balance accel magnitude into “prop” so we can watch it easily
+                    // or keep a separate field if you prefer
+                    prop += (ax*ax + az*az).sqrt();
+                }
+                _ => {}
+            }
+        }
+
+        (imp, ccd, aero, prop)
+    }
 }
+// ---- glue: adapt World to the harness surface ----
+impl crate::det_harness::types::SimWorld for World {
+    fn step_dt(&mut self, dt: f32) -> crate::det_harness::types::StepReport {
+        let stats = self.step(dt);                      // ← don’t forget this call
+        let (imp, ccd, aero, prop) = self.provenance_sums();
+        crate::det_harness::types::StepReport {
+            dt, epoch: self.epoch_id, hash: self.step_hash(),
+            pairs_tested: stats.pairs_tested,
+            contacts:     stats.contacts,
+            impulses_sum: imp,
+            ccd_hits:     ccd,
+            aero_sum:     aero,
+            prop_sum:     prop,
+        }
+    }
+
+
+    fn epoch_id(&self) -> u64      { self.epoch_id }
+    fn step_hash(&self) -> [u8;32] { self.step_hash() }
+
+    fn apply_inputs(&mut self, inputs: &crate::det_harness::types::Inputs) {
+        use crate::det_harness::types::InputEvent::*;
+        for ev in &inputs.events {
+            match *ev {
+                SetThrottle { body, throttle01 } => {
+                    self.set_body_throttle(body, throttle01);
+                }
+                SetVelocity { body, lin, ang } => {
+                    self.set_body_vel(body, riftphys_core::Velocity {
+                        lin: riftphys_core::vec3(lin[0], lin[1], lin[2]),
+                        ang: riftphys_core::vec3(ang[0], ang[1], ang[2]),
+                    });
+                }
+                SetBodyAccel { body, aero, prop, ref_area, throttle01 } => {
+                    self.set_body_accel(body, aero, prop, ref_area, throttle01, None);
+                }
+                GravityLayeredPlanet { surface_g, radius, center, min_r } => {
+                    self.queue_gravity_swap(riftphys_gravity::GravitySpec::LayeredPlanet {
+                        surface_g, radius, center, min_r
+                    });
+                }
+            }
+        }
+    }
+}
+
 
 /* ---------- helpers ---------- */
 #[inline] fn clampf(x: f32, lo: f32, hi: f32) -> f32 { x.max(lo).min(hi) }

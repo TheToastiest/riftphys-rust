@@ -6,7 +6,18 @@ pub mod time;
 pub mod determinism;
 pub mod schedule;
 pub mod rng;
-pub mod epoch;           // <-- add
+pub mod epoch;
+pub mod hash_world;
+pub mod models;
+// <-- add
+pub mod step_ctx;
+
+pub use step_ctx::StepCtx;
+pub use epoch::{EpochId, EpochManager};
+pub use models::{
+    AeroHandle, PropHandle, AccelPackHandle, ModelPackId, ModelPack, ModelRegistry,
+    AeroModel, PropulsionModel, AeroQuery, PropQuery,
+};
 
 pub use scalar::Scalar;
 pub use ids::{BodyId, ColliderId, JointId};

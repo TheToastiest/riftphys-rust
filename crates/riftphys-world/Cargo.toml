@@ -15,4 +15,9 @@ riftphys-terrain = { path = "../riftphys-terrain" }
 riftphys-melee = { path = "../riftphys-melee" }
 riftphys-materials = { path = "../riftphys-materials" }
 riftphys-controllers = { path = "../riftphys-controllers" }
+
+
+riftphys-vehicles = { path = "../riftphys-vehicles" }
+
 glam               = { workspace = true }
+blake3 = "1.8.2"

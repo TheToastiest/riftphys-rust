@@ -1,8 +1,8 @@
 [package]
-name = "riftphys-controllers"
+name = "riftphys-aero"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 riftphys-core = { path = "../riftphys-core" }
-glam               = { workspace = true }
+glam = "0.27"

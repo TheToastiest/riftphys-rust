@@ -22,6 +22,7 @@ pub struct DebugSettings {
     pub show_impulses: bool, // world-side printer may ignore until wired
     pub show_energy: bool,
     pub max_lines: usize,    // clamp output lines
+    pub json_every: u32,
 }
 impl Default for DebugSettings {
     fn default() -> Self {
@@ -32,6 +33,7 @@ impl Default for DebugSettings {
             show_impulses: false,
             show_energy: false,
             max_lines: 200,
+            json_every: 0,
         }
     }
 }
@@ -55,6 +57,12 @@ pub enum LedgerEvent {
 
     // CCD
     CCDHit { id: u32, toi: f32 },
+
+    AeroProp { id: u32, t_n: f32, d_n: f32, speed: f32 },
+    // riftphys-viz/src/telemetry.rs
+    VehicleWheel { body: u32, wheel: u32, x: f32, f_susp: f32, f_long: f32, f_lat: f32 },
+    BalanceAccel { id: u32, ax: f32, az: f32 },
+
 }
 
 impl LedgerEvent {
@@ -76,6 +84,13 @@ impl LedgerEvent {
                 format!(r#"{{"t":"J","a":{},"b":{},"lam":{:.6},"c":{:.6}}}"#, a,b,lambda,compliance),
             LedgerEvent::CCDHit { id, toi } =>
                 format!(r#"{{"t":"X","id":{},"toi":{:.6}}}"#, id, toi),
+            LedgerEvent::AeroProp { id, t_n, d_n, speed } =>
+                format!(r#"{{"t":"A","id":{},"tN":{:.6},"dN":{:.6},"speed":{:.6}}}"#, id, t_n, d_n, speed),
+            LedgerEvent::VehicleWheel { body, wheel, x, f_susp, f_long, f_lat } =>
+                format!(r#"{{"t":"VW","id":{},"w":{},"x":{:.6},"fs":{:.6},"fx":{:.6},"fy":{:.6}}}"#,
+                        body, wheel, x, f_susp, f_long, f_lat),
+            LedgerEvent::BalanceAccel { id, ax, az } =>
+                format!(r#"{{"t":"BA","id":{},"ax":{:.6},"az":{:.6}}}"#, id, ax, az),
         }
     }
 }

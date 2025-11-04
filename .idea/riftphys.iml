@@ -2,6 +2,8 @@
 <module type="EMPTY_MODULE" version="4">
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-acceleration/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-aero/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-articulation/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-benchtests/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-collision/src" isTestSource="false" />
@@ -13,10 +15,13 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-materials/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-melee/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-terrain/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-vehicles/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-viz/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-vox/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-world/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-world/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-render/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/tools/riftphys-vis-tool/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

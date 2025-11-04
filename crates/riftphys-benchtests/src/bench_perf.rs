@@ -31,7 +31,7 @@ fn main() {
     w.set_debug(DebugSettings {
         print_every: 0, // set >0 if you want per-tick dumps too
         show_bodies: false, show_contacts: false, show_impulses: false, show_energy: false,
-        max_lines: 32,
+        max_lines: 32, json_every: 0,
     });
 
     // gravity (uniform for stability)
