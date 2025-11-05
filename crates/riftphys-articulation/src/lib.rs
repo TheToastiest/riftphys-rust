@@ -1,4 +1,4 @@
-use riftphys_core::{Scalar, Vec3, BodyId, JointId};
+use riftphys_core::{Scalar, BodyId, JointId};
 use riftphys_dynamics::Bodies;
 
 /// Simple XPBD distance joint between body centers.

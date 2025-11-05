@@ -60,9 +60,9 @@ impl HeightField {
     pub fn sample_normal(&self, x: f32, z: f32) -> Vec3 {
         // sample ± one cell in x and z for gradient
         let hx0 = self.sample_height((x - self.cell.x).max(0.0), z);
-        let hx1 = self.sample_height((x + self.cell.x), z);
+        let hx1 = self.sample_height(x + self.cell.x, z);
         let hz0 = self.sample_height(x, (z - self.cell.y).max(0.0));
-        let hz1 = self.sample_height(x, (z + self.cell.y));
+        let hz1 = self.sample_height(x, z + self.cell.y);
 
         // dh/dx, dh/dz scaled by cell size
         let ddx = (hx1 - hx0) / (2.0 * self.cell.x.max(1e-6));

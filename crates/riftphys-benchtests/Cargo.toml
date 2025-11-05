@@ -11,6 +11,10 @@ path = "src/epoch_swap.rs"
 name = "bench_perf"
 path = "src/bench_perf.rs"
 
+#[[bin]]
+#name = "epoch_shadow"
+#path = "src/epoch_shadow.rs"
+
 [dependencies]
 riftphys-world = { path = "../riftphys-world" }
 riftphys-core  = { path = "../riftphys-core" }
@@ -23,4 +27,8 @@ riftphys-aero = { path = "../riftphys-aero" }
 riftphys-acceleration = { path = "../riftphys-acceleration" }
 riftphys-vehicles = { path = "../riftphys-vehicles" }
 riftphys-controllers = { path = "../riftphys-controllers" }
+riftphys-locomotion = { path = "../riftphys-locomotion" }
+riftphys-bridge-uriel = { path = "../riftphys-bridge-uriel" }
+
 glam = { workspace = true }
+serde_json = "1.0.145"

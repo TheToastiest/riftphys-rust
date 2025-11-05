@@ -5,4 +5,4 @@ edition = "2021"
 
 [dependencies]
 riftphys-core = { path = "../riftphys-core" }
-glam = "0.27"
+glam = { workspace = true }

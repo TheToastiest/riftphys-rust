@@ -3,26 +3,25 @@ name = "riftphys-vis-tool"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "riftphys-vis-tool"
-path = "src/main.rs"
-
 [dependencies]
-# Pin to versions that are mutually compatible (raw-window-handle)
-winit  = "=0.28.7"
-pixels = "=0.13.0"
-bytemuck = "1.15"
-glam = "0.27"
-
-# Your crates
-riftphys-core         = { path = "../../crates/riftphys-core" }
-riftphys-world        = { path = "../../crates/riftphys-world" }
-riftphys-geom         = { path = "../../crates/riftphys-geom" }
-riftphys-vehicles     = { path = "../../crates/riftphys-vehicles" }
-riftphys-acceleration = { path = "../../crates/riftphys-acceleration" }
-riftphys-aero         = { path = "../../crates/riftphys-aero" }
-riftphys-gravity      = { path = "../../crates/riftphys-gravity" }
-riftphys-controllers  = { path = "../../crates/riftphys-controllers" }
-riftphys-terrain      = { path = "../../crates/riftphys-terrain" }
-riftphys-viz          = { path = "../../crates/riftphys-viz" }
+# 3D renderer (your crate)
 riftphys-render = { path = "../../crates/riftphys-render" }
+
+# Engine crates
+glam = "0.27"
+riftphys-core = { path = "../../crates/riftphys-core" }
+riftphys-world = { path = "../../crates/riftphys-world" }
+riftphys-geom = { path = "../../crates/riftphys-geom" }
+riftphys-gravity = { path = "../../crates/riftphys-gravity" }
+riftphys-aero = { path = "../../crates/riftphys-aero" }
+riftphys-acceleration = { path = "../../crates/riftphys-acceleration" }
+riftphys-controllers = { path = "../../crates/riftphys-controllers" }
+riftphys-viz = { path = "../../crates/riftphys-viz" }
+
+# Windowing (same as workspace: =0.30.12)
+winit = { version = "0.30.12" }
+wgpu = "0.20"
+
+# To block_on async renderer creation
+pollster = "0.3"
+anyhow = "1.0.100"

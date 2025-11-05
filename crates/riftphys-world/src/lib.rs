@@ -66,10 +66,16 @@ pub struct WorldBuilder {
 }
 impl WorldBuilder {
     pub fn new() -> Self { Self { bodies: 128, colliders: 128 } }
+
     pub fn with_capacity(mut self, bodies: usize, colliders: usize) -> Self {
-        self.bodies = bodies; self.colliders = colliders; self
+        self.bodies = bodies;
+        self.colliders = colliders;
+        self
     }
-    pub fn build(self) -> World { World::with_capacity(self.bodies, self.colliders) }
+
+    pub fn build(self) -> World {
+        World::with_capacity(self.bodies, self.colliders)
+    }
 }
 #[derive(Copy, Clone, Debug)]
 struct AccelComp {
@@ -80,6 +86,8 @@ struct AccelComp {
     // If you want per-body forward override; otherwise we infer from pose:
     forward_dir_world: Option<Vec3>, // default: +X body rotated to world
 }
+#[derive(Copy, Clone, Default)]
+struct WarmImp { jn: f32, jt1: f32, jt2: f32 }
 
 /* ---------------- World ---------------- */
 pub struct World {
@@ -114,6 +122,8 @@ pub struct World {
     models: ModelRegistry,
     accel_comps: Vec<Option<AccelComp>>,
     balances: Vec<BalanceInstance>,
+
+    warm_cache: BTreeMap<(u32, u32), WarmImp>,
 
 }
 
@@ -153,6 +163,7 @@ impl World {
             models: ModelRegistry::new(),
             accel_comps: vec![None; bodies],
             balances: Vec::new(),
+            warm_cache: BTreeMap::new(),
 
         }
     }
@@ -281,13 +292,15 @@ impl World {
             if let GravitySpec::Uniform { g } = spec {
                 self.gravity = Vec3::new(g[0], g[1], g[2]);
             }
-            return;
+            self.warm_cache.clear();
         }
         if let Some(desc) = self.pending_epoch.take() {
             self.epoch_id = epoch_id(&desc);
             let g = Vec3::new(desc.gravity_g[0], desc.gravity_g[1], desc.gravity_g[2]);
             self.set_gravity(g);
+            self.warm_cache.clear();
         }
+
     }
 
     /* ---------- World composition ---------- */
@@ -564,6 +577,41 @@ impl World {
             if let Some(c) = self.contact_sphere_box(i, j)   { contacts.push(c); continue; }
             if let Some(c) = self.contact_capsule_box(i, j)  { contacts.push(c); continue; }
         }
+        // ---- Deterministic cull: keep at most 4 contacts per collider pair
+        let axis_code = |n: riftphys_core::Vec3| -> u8 {
+            let ax = n.x.abs(); let ay = n.y.abs(); let az = n.z.abs();
+            if ax >= ay && ax >= az { 0 } else if ay >= az { 1 } else { 2 }
+        };
+        let mut buckets: std::collections::BTreeMap<(u32,u32), Vec<Contact>> = std::collections::BTreeMap::new();
+        for c in contacts.drain(..) {
+            let key = if c.a_collider <= c.b_collider { (c.a_collider as u32, c.b_collider as u32) }
+            else                             { (c.b_collider as u32, c.a_collider as u32) };
+            buckets.entry(key).or_default().push(c);
+        }
+        let mut contacts_culled: Vec<Contact> = Vec::new();
+        for (_key, mut v) in buckets {
+            v.sort_by(|c1, c2| {
+                let ac1 = axis_code(c1.normal); let ac2 = axis_code(c2.normal);
+                ac1.cmp(&ac2)
+                    .then_with(|| c2.depth.partial_cmp(&c1.depth).unwrap()) // deeper first
+                    .then_with(|| c1.a_collider.cmp(&c2.a_collider))
+                    .then_with(|| c1.b_collider.cmp(&c2.b_collider))
+            });
+            v.truncate(4);
+            contacts_culled.extend(v.into_iter());
+        }
+        let mut contacts = contacts_culled;
+
+        // ---- Quantize normals and depths (kill ulp jitter)
+        let q = 1.0e-6f32;
+        for c in &mut contacts {
+            let x = (c.normal.x / q).round() * q;
+            let y = (c.normal.y / q).round() * q;
+            let z = (c.normal.z / q).round() * q;
+            let len = (x*x + y*y + z*z).sqrt();
+            c.normal = if len > 1.0e-20 { riftphys_core::vec3(x/len, y/len, z/len) } else { riftphys_core::vec3(0.0, 1.0, 0.0) };
+            c.depth  = (c.depth / q).round() * q;
+        }
 
         // --- Guard/Brace controllers: update based on contacts; set joint params ---
         for g in &mut self.guards {
@@ -770,8 +818,22 @@ impl World {
         let slop = 0.001;
         let beta = 0.8;
 
-        for _ in 0..iterations {
-            for c in contacts {
+        // Build warmstart vector aligned with `contacts` order
+        let mut warms: Vec<WarmImp> = Vec::with_capacity(contacts.len());
+        for c in contacts {
+            let key = if c.a_collider <= c.b_collider {
+                (c.a_collider as u32, c.b_collider as u32)
+            } else {
+                (c.b_collider as u32, c.a_collider as u32)
+            };
+            warms.push(*self.warm_cache.get(&key).unwrap_or(&WarmImp::default()));
+        }
+
+        // Track impulses to store for next tick (final iteration values)
+        let mut next_warms: Vec<WarmImp> = vec![WarmImp::default(); contacts.len()];
+
+        for it in 0..iterations {
+            for (idx, c) in contacts.iter().enumerate() {
                 let ai = self.colliders[c.a_collider].body.0;
                 let bi = self.colliders[c.b_collider].body.0;
                 if ai == bi { continue; }
@@ -780,9 +842,20 @@ impl World {
                 let inv_b = self.bodies.inv_mass_of(bi);
                 if inv_a + inv_b == 0.0 { continue; }
 
+                if it == 0 {
+                    let w = warms[idx];
+                    if w.jn != 0.0 || w.jt1 != 0.0 || w.jt2 != 0.0 {
+                        let n = c.normal;
+                        let (t1, t2) = orthonormal_basis(n);
+                        let imp = n * w.jn + t1 * w.jt1 + t2 * w.jt2;
+                        self.bodies.apply_impulse(ai, -imp);
+                        self.bodies.apply_impulse(bi,  imp);
+                    }
+                }
+
+
                 let ma = self.colliders[c.a_collider].material;
                 let mb = self.colliders[c.b_collider].material;
-                // Combine however you prefer; default uses collider fields:
                 let restitution = ma.restitution.max(mb.restitution);
                 let mu_s = (ma.mu_s * mb.mu_s).abs().sqrt();
                 let mu_k = (ma.mu_k * mb.mu_k).abs().sqrt();
@@ -801,6 +874,7 @@ impl World {
                     self.bodies.apply_impulse(bi,  imp_n);
                     self.ledger.push(LedgerEvent::ImpulseN { a: ai, b: bi, jn });
                 }
+                next_warms[idx].jn = jn;
 
                 // Positional correction (split impulse style)
                 let corr = (c.depth - slop).max(0.0) * beta;
@@ -828,7 +902,7 @@ impl World {
                     if denom > 0.0 {
                         let jt1_des = -vt1 / denom;
                         let jt2_des = -vt2 / denom;
-                        let jt_des_len = (jt1_des * jt1_des + jt2_des * jt2_des).sqrt();
+                        let jt_des_len = (jt1_des*jt1_des + jt2_des*jt2_des).sqrt();
                         let jt_max_static = mu_s * jn;
 
                         let (jt1, jt2) = if jt_des_len <= jt_max_static || jn == 0.0 {
@@ -839,6 +913,10 @@ impl World {
                             (jt1_des * scale, jt2_des * scale)
                         };
 
+                        // Remember for next warmstart
+                        next_warms[idx].jt1 = jt1;
+                        next_warms[idx].jt2 = jt2;
+
                         let jt_vec = t1 * jt1 + t2 * jt2;
                         self.bodies.apply_impulse(ai, -jt_vec);
                         self.bodies.apply_impulse(bi,  jt_vec);
@@ -847,7 +925,20 @@ impl World {
                 }
             }
         }
+
+        // ----- write warmstart cache for next tick (once, after last iteration) -----
+        let mut new_cache: BTreeMap<(u32,u32), WarmImp> = BTreeMap::new();
+        for (idx, c) in contacts.iter().enumerate() {
+            let key = if c.a_collider <= c.b_collider {
+                (c.a_collider as u32, c.b_collider as u32)
+            } else {
+                (c.b_collider as u32, c.a_collider as u32)
+            };
+            new_cache.insert(key, next_warms[idx]);
+        }
+        self.warm_cache = new_cache;
     }
+
 
     /* ---------- Debug printer ---------- */
     fn print_debug_block(&self, contacts: &[Contact]) {

@@ -15,12 +15,18 @@ members = [
     "crates/riftphys-aero",
     "crates/riftphys-acceleration",
     "crates/riftphys-vehicles",
+    "crates/riftphys-render",
+    "crates/riftphys-locomotion",
+    "crates/riftphys-io",
+    "crates/riftphys-bridge-uriel",
     "tools/riftphys-vis-tool",
 ]
 resolver = "2"
 
 [workspace.dependencies]
+wgpu = "0.20"
 glam   = { version = "0.27", default-features = false, features = ["libm"] }
 blake3 = "1.5"
 serde  = { version = "1", features = ["derive"] }
 bitvec = "1.0"
+winit  = "=0.30.12"

@@ -1,0 +1,17 @@
+[package]
+name = "riftphys-locomotion"
+version = "0.1.0"
+edition = "2021"
+description = "Deterministic minimal locomotion primitives (single-step gait, foot clocks, swing arcs) for RiftPhys."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "riftphys_locomotion"
+path = "src/lib.rs"
+
+[dependencies]
+# Prefer workspace-managed glam if you have it:
+glam = { workspace = true }
+
+# If you don't manage glam in the workspace, swap the above for:
+# glam = "0.25"

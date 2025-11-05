@@ -1,22 +1,30 @@
-//! riftphys-vis-tool — minimal top-down viewer (winit 0.28 + pixels 0.13)
-
+//! riftphys-vis-tool — 3D Visual Debugger (winit 0.30 + riftphys-render/wgpu 0.20)
+//
+// Controls:
+//   Mouse Right-Button + move  -> look around (360° yaw, ±89° pitch)
+//   W/A/S/D                    -> move forward/left/back/right
+//   Q / E                      -> move down / up
+//   R                          -> reset camera
+//   Space                      -> pause/unpause physics
+//   Esc                        -> exit
 use std::sync::Arc;
-use std::time::Instant;
-
-use glam::{Vec2, Vec3};
-use pixels::{Pixels, SurfaceTexture};
+use std::{collections::HashSet, time::Instant};
+use glam::{Vec3, Quat};
 use winit::{
-    dpi::LogicalSize,
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
-    event_loop::{ControlFlow, EventLoop},
-    window::WindowBuilder,
+    application::ApplicationHandler,
+    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowAttributes, WindowId, CursorGrabMode},
 };
+use winit::event::{ElementState, WindowEvent, KeyEvent, MouseButton, DeviceEvent, DeviceId};
+use winit::event_loop::{ActiveEventLoop, EventLoop, DeviceEvents};
+use wgpu::SurfaceError;
+use riftphys_render::{Renderer, Instance, ShapeKind, trs};
 
 use riftphys_viz::DebugSettings;
-
 use riftphys_world::*;
-use riftphys_core::{iso, vec3, quat_identity, Velocity};
-use riftphys_geom::{aabb_of, Aabb, MassProps, Material, Shape};
+use riftphys_core::{iso, vec3, quat_identity, Velocity, BodyId};
+use riftphys_geom::{MassProps, Material, Shape};
 use riftphys_gravity::GravitySpec;
 
 use riftphys_aero::{CombinedAero, FlatPlateDrag, ISA, SimpleWing};
@@ -27,87 +35,18 @@ use riftphys_controllers::BalanceParams;
 fn env_u32(key: &str, default: u32) -> u32 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
 }
-fn env_f32(key: &str, default: f32) -> f32 {
-    std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
-}
 
-/* ---------------- camera ---------------- */
-#[derive(Clone, Copy)]
-struct Cam {
-    center: Vec2, // world (x,z)
-    ppm: f32,     // pixels per meter
-}
-impl Cam {
-    fn world_to_screen(&self, p: Vec2, w: u32, h: u32) -> (i32, i32) {
-        let sx = (w as f32 * 0.5) + (p.x - self.center.x) * self.ppm;
-        let sy = (h as f32 * 0.5) - (p.y - self.center.y) * self.ppm;
-        (sx.round() as i32, sy.round() as i32)
-    }
-}
-
-/* ---------------- tiny raster helpers ---------------- */
-fn put(px: &mut [u8], w: u32, h: u32, x: i32, y: i32, rgba: [u8; 4]) {
-    if x < 0 || y < 0 { return; }
-    let (x, y) = (x as u32, y as u32);
-    if x >= w || y >= h { return; }
-    let i = ((y * w + x) * 4) as usize;
-    px[i..i + 4].copy_from_slice(&rgba);
-}
-fn line(px: &mut [u8], w: u32, h: u32, mut x0: i32, mut y0: i32, x1: i32, y1: i32, rgba: [u8; 4]) {
-    let dx = (x1 - x0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let dy = -(y1 - y0).abs();
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    loop {
-        put(px, w, h, x0, y0, rgba);
-        if x0 == x1 && y0 == y1 { break; }
-        let e2 = 2 * err;
-        if e2 >= dy { err += dy; x0 += sx; }
-        if e2 <= dx { err += dx; y0 += sy; }
-    }
-}
-fn rect_outline(px: &mut [u8], w: u32, h: u32, x0: i32, y0: i32, x1: i32, y1: i32, rgba: [u8; 4]) {
-    line(px, w, h, x0, y0, x1, y0, rgba);
-    line(px, w, h, x1, y0, x1, y1, rgba);
-    line(px, w, h, x1, y1, x0, y1, rgba);
-    line(px, w, h, x0, y1, x0, y0, rgba);
-}
-fn draw_grid(px: &mut [u8], w: u32, h: u32, cam: Cam, step_m: f32) {
-    let rgba = [40, 40, 40, 255];
-    let half = 50.0;
-    for i in -50..=50 {
-        let x = i as f32 * step_m + cam.center.x;
-        let z0 = cam.center.y - half * step_m;
-        let z1 = cam.center.y + half * step_m;
-        let (x0, y0) = cam.world_to_screen(Vec2::new(x, z0), w, h);
-        let (x1, y1) = cam.world_to_screen(Vec2::new(x, z1), w, h);
-        line(px, w, h, x0, y0, x1, y1, rgba);
-    }
-    for k in -50..=50 {
-        let z = k as f32 * step_m + cam.center.y;
-        let x0 = cam.center.x - half * step_m;
-        let x1 = cam.center.x + half * step_m;
-        let (u0, v0) = cam.world_to_screen(Vec2::new(x0, z), w, h);
-        let (u1, v1) = cam.world_to_screen(Vec2::new(x1, z), w, h);
-        line(px, w, h, u0, v0, u1, v1, rgba);
-    }
-}
-fn draw_aabb_xz(px: &mut [u8], w: u32, h: u32, cam: Cam, bb: &Aabb, rgba: [u8; 4]) {
-    let (sx0, sy0) = cam.world_to_screen(Vec2::new(bb.min.x, bb.min.z), w, h);
-    let (sx1, sy1) = cam.world_to_screen(Vec2::new(bb.max.x, bb.max.z), w, h);
-    rect_outline(px, w, h, sx0, sy0, sx1, sy1, rgba);
-}
-
-/* ---------------- store shape for re-AABB each frame ---------------- */
+/* ---------------- draw collider ---------------- */
 #[derive(Clone, Copy)]
 struct DrawCollider {
-    body: riftphys_core::BodyId,
+    body: BodyId,
     shape: Shape,
 }
 
 /* ---------------- scene ---------------- */
-fn build_scene() -> (World, Vec<DrawCollider>, riftphys_core::BodyId) {
+fn build_scene() -> (World, Vec<DrawCollider>, BodyId) {
+    use std::sync::Arc;
+
     let mut w = WorldBuilder::new().with_capacity(256, 256).build();
     w.set_epoch(1);
     w.set_rng_seed(0xBADC0FFEE);
@@ -143,7 +82,7 @@ fn build_scene() -> (World, Vec<DrawCollider>, riftphys_core::BodyId) {
     w.add_collider(s, sphere_shape, Material::default());
     drawlist.push(DrawCollider { body: s, shape: sphere_shape });
 
-    // Capsule
+    // Capsule (with aero/prop)
     let c = w.add_body(iso(vec3(2.0, 1.5, 0.0), quat_identity()),
                        Velocity { lin: vec3(250.0, 0.0, 0.0), ang: vec3(0.0, 0.0, 0.0) },
                        MassProps::from_capsule(0.25, 0.5, 750.0), true);
@@ -168,7 +107,7 @@ fn build_scene() -> (World, Vec<DrawCollider>, riftphys_core::BodyId) {
     w.add_balance_controller(pelvis, left_foot, right_foot,
                              BalanceParams { k_accel: 25.0, max_accel: 40.0, com_height: 1.0, quantize: 1e-6 });
 
-    // Aero/prop on capsule (+ sphere drag)
+    // Aero/Prop
     let isa = ISA::default();
     let drag = Arc::new(FlatPlateDrag { cd: 1.0, area_m2: 0.20, isa });
     let drag_h = w.models_mut().register_aero(drag);
@@ -197,114 +136,267 @@ fn build_scene() -> (World, Vec<DrawCollider>, riftphys_core::BodyId) {
     (w, drawlist, s)
 }
 
-/* ---------------- main ---------------- */
-fn main() {
-    // determinism clock (120..200 Hz)
-    let hz = env_u32("RPHYS_HZ", 120).clamp(120, 200);
-    let mut dt = std::env::var("RPHYS_DT").ok().and_then(|s| s.parse::<f32>().ok()).unwrap_or(1.0 / hz as f32);
-    if dt <= 0.0 { dt = 1.0 / 120.0; }
+/* ---------------- instance build ---------------- */
+fn build_instances(world: &World, drawlist: &[DrawCollider]) -> Vec<Instance> {
+    fn color_rgb(r: u8, g: u8, b: u8) -> glam::Vec3 {
+        glam::Vec3::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+    }
+    let c_box  = color_rgb(100, 200, 255);
+    let c_sph  = color_rgb(220, 160,  80);
+    let c_caps = color_rgb(170, 120, 240);
 
-    // camera + grid
-    let scale = env_f32("VIS_SCALE", 48.0);
-    let mut cam = Cam { center: Vec2::new(0.0, 0.0), ppm: scale };
-    let mut show_grid = true;
+    let mut v = Vec::with_capacity(drawlist.len());
+    for dc in drawlist {
+        let pose = world.get_body_pose(dc.body);
+        let p = glam::Vec3::new(pose.pos.x, pose.pos.y, pose.pos.z);
+        // Assuming pose.rot is glam::Quat
+        let q: Quat = pose.rot;
 
-    // window (winit 0.28: build returns Result<Window, OsError> -> unwrap it)
-    let el = EventLoop::new();
-    let size = LogicalSize::new(1280.0, 800.0);
-    let window = WindowBuilder::new()
-        .with_title("riftphys-vis-tool")
-        .with_inner_size(size)
-        .build(&el)
-        .expect("failed to create window");
+        match dc.shape {
+            Shape::Box { hx, hy, hz } => {
+                v.push(Instance {
+                    model: trs(p, q, glam::Vec3::new(hx, hy, hz)),
+                    color: c_box,
+                    kind: ShapeKind::Box { hx, hy, hz },
+                });
+            }
+            Shape::Sphere { r } => {
+                v.push(Instance {
+                    model: trs(p, q, glam::Vec3::splat(r)),
+                    color: c_sph,
+                    kind: ShapeKind::Sphere { r },
+                });
+            }
+            Shape::Capsule { r, hh } => {
+                // renderer's unit capsule has radius=1 and cylinder half-height=1,
+                // so half-length_unit = 1 + 1 = 2. Desired half-length = hh + r.
+                // Scale Y by (hh + r) / 2; XZ by r.
+                let sy = (hh + r) / 2.0;
+                v.push(Instance {
+                    model: trs(p, q, glam::Vec3::new(r, sy, r)),
+                    color: c_caps,
+                    kind: ShapeKind::CapsuleY { r, hh },
+                });
+            }
+        }
+    }
+    v
+}
 
-    let size_px = window.inner_size();
-    let width = size_px.width.max(1);
-    let height = size_px.height.max(1);
-    let surface = SurfaceTexture::new(width, height, &window);
-    let mut pixels = Pixels::new(width, height, surface).expect("pixels init failed");
+/* ---------------- app ---------------- */
+struct App {
+    renderer: Option<Renderer>,
+    window:   Option<Arc<Window>>,
+    world: Option<World>,
+    drawlist: Vec<DrawCollider>,
+    paused: bool,
+    last: Instant,
+    acc: f32,
+    dt_fixed: f32,
+    pressed: HashSet<KeyCode>,
+    rmb_down: bool,
+    last_cursor: Option<PhysicalPosition<f64>>,
+    move_speed: f32,
+    sphere_id: BodyId,
+}
 
-    // scene
-    let (mut world, drawlist, sphere_id) = build_scene();
+impl App {
+    fn new() -> Self {
+        let hz = env_u32("RPHYS_HZ", 120).clamp(120, 200);
+        let dt_fixed = (1.0 / hz as f32).max(1.0 / 200.0);
 
-    let mut last = Instant::now();
-    let mut acc = 0.0f32;
-    let mut paused = false;
+        let (world, drawlist, sphere_id) = build_scene();
 
-    el.run(move |event, _, control_flow| {
-        *control_flow = ControlFlow::Poll;
+        Self {
+            window: None,
+            renderer: None,
+            world: Some(world),
+            drawlist,
+            paused: false,
+            last: Instant::now(),
+            acc: 0.0,
+            dt_fixed,
+            pressed: HashSet::new(),
+            rmb_down: false,
+            last_cursor: None,
+            move_speed: 5.0, // m/s base
+            sphere_id,
+        }
+    }
 
-        match event {
-            Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
-                WindowEvent::KeyboardInput {
-                    input: KeyboardInput { state, virtual_keycode: Some(key), .. }, ..
-                } => {
-                    let down = state == ElementState::Pressed;
-                    match key {
-                        VirtualKeyCode::Escape => *control_flow = ControlFlow::Exit,
-                        VirtualKeyCode::Space  => if down { paused = !paused; }
-                        VirtualKeyCode::G      => if down { show_grid = !show_grid; }
-                        VirtualKeyCode::Q      => if down { cam.ppm = (cam.ppm * 0.9).max(8.0); }
-                        VirtualKeyCode::E      => if down { cam.ppm = (cam.ppm * 1.1).min(400.0); }
-                        VirtualKeyCode::W      => if down { cam.center.y -= 0.25; }
-                        VirtualKeyCode::S      => if down { cam.center.y += 0.25; }
-                        VirtualKeyCode::A      => if down { cam.center.x -= 0.25; }
-                        VirtualKeyCode::D      => if down { cam.center.x += 0.25; }
-                        VirtualKeyCode::Left   => if down && paused { world.step(dt); }
-                        VirtualKeyCode::Right  => if down && paused { world.step(dt); }
-                        VirtualKeyCode::R      => if down { cam.center = Vec2::ZERO; cam.ppm = scale; }
+    fn on_resize(&mut self, size: PhysicalSize<u32>) {
+        if let Some(r) = self.renderer.as_mut() {
+            r.resize(size.width.max(1), size.height.max(1));
+        }
+    }
+
+    fn handle_key(&mut self, ke: &KeyEvent, el: &ActiveEventLoop) {
+        if let PhysicalKey::Code(code) = ke.physical_key {
+            match ke.state {
+                ElementState::Pressed => {
+                    // on-press actions
+                    match code {
+                        KeyCode::Escape => { el.exit(); return; }
+                        KeyCode::Space  => { self.paused = !self.paused; }
+                        KeyCode::KeyR   => {
+                            if let Some(r) = self.renderer.as_mut() {
+                                r.camera.eye   = Vec3::new(-6.0, 4.0, 6.0);
+                                r.camera.yaw   = 45_f32.to_radians();
+                                r.camera.pitch = (-15_f32).to_radians();
+                            }
+                        }
                         _ => {}
                     }
+                    self.pressed.insert(code);
                 }
-                _ => {}
-            },
-            Event::MainEventsCleared => {
-                // fixed-step update
-                let now = Instant::now();
-                let dt_real = (now - last).as_secs_f32();
-                last = now;
-
-                if !paused {
-                    acc += dt_real;
-                    if acc > 0.25 { acc = 0.25; } // cap hiccups
-                    while acc >= dt {
-                        world.step(dt);
-                        acc -= dt;
-                    }
+                ElementState::Released => {
+                    self.pressed.remove(&code);
                 }
-                window.request_redraw();
             }
-            Event::RedrawRequested(_) => {
-                // clear
-                let frame = pixels.frame_mut();
-                for px in frame.chunks_exact_mut(4) { px.copy_from_slice(&[12, 12, 16, 255]); }
+        }
+    }
 
-                if show_grid { draw_grid(frame, width, height, cam, 1.0); }
-
-                // draw colliders (recompute AABB each frame)
-                for dc in &drawlist {
-                    let pose = world.get_body_pose(dc.body);
-                    let bb = aabb_of(&dc.shape, &pose);
-                    let color = match dc.shape {
-                        Shape::Box { .. }     => [100, 200, 255, 255],
-                        Shape::Sphere { .. }  => [220, 160, 80, 255],
-                        Shape::Capsule { .. } => [170, 120, 240, 255],
-                    };
-                    draw_aabb_xz(frame, width, height, cam, &bb, color);
-                }
-
-                // mark sphere
-                let pose_s = world.get_body_pose(sphere_id);
-                let p = Vec2::new(pose_s.pos.x, pose_s.pos.z);
-                let (sx, sy) = cam.world_to_screen(p, width, height);
-                put(frame, width, height, sx, sy, [255,255,255,255]);
-                line(frame, width, height, sx-4, sy, sx+4, sy, [255,255,255,255]);
-                line(frame, width, height, sx, sy-4, sx, sy+4, [255,255,255,255]);
-
-                let _ = pixels.render();
+    fn handle_mouse(&mut self, event: &WindowEvent) {
+        let window = match self.window.as_ref() { Some(w) => w, None => return };
+        match *event {
+            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+                self.rmb_down = state == ElementState::Pressed;
+                let _ = window.set_cursor_grab(if self.rmb_down { CursorGrabMode::Locked } else { CursorGrabMode::None });
+                window.set_cursor_visible(!self.rmb_down);
+                self.last_cursor = None; // optional: no longer needed
             }
             _ => {}
         }
-    });
+    }
+
+
+    fn update_camera(&mut self, dt: f32) {
+        let mut dir = Vec3::ZERO;
+        if let Some(r) = self.renderer.as_ref() {
+            if self.pressed.contains(&KeyCode::KeyW) { dir += r.camera.forward(); }
+            if self.pressed.contains(&KeyCode::KeyS) { dir -= r.camera.forward(); }
+            if self.pressed.contains(&KeyCode::KeyD) { dir += r.camera.right();   }
+            if self.pressed.contains(&KeyCode::KeyA) { dir -= r.camera.right();   }
+            if self.pressed.contains(&KeyCode::KeyE) { dir += Vec3::Y; }
+            if self.pressed.contains(&KeyCode::KeyQ) { dir -= Vec3::Y; }
+        }
+        if let Some(r) = self.renderer.as_mut() {
+            if dir.length_squared() > 1e-6 {
+                r.camera.eye += dir.normalize() * self.move_speed * dt;
+            }
+        }
+    }
+
+    fn step_world(&mut self, dt_real: f32) {
+        self.acc += dt_real.min(0.25);
+        if self.paused { return; }
+        if let Some(w) = self.world.as_mut() {
+            while self.acc >= self.dt_fixed {
+                w.step(self.dt_fixed);
+                self.acc -= self.dt_fixed;
+            }
+        }
+    }
+
+    fn render(&mut self) {
+        let (r, w) = match (self.renderer.as_mut(), self.world.as_ref()) {
+            (Some(r), Some(w)) => (r, w),
+            _ => return,
+        };
+        let instances = build_instances(w, &self.drawlist);
+        match r.render(&instances) {
+            Ok(()) => {}
+            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+                if let Some(win) = self.window.as_ref() {
+                    let size = win.inner_size();
+                    r.resize(size.width.max(1), size.height.max(1));
+                }
+            }
+            Err(SurfaceError::OutOfMemory) => std::process::exit(1),
+            Err(_) => {}
+        }
+
+        if let Some(win) = self.window.as_ref() {
+            win.request_redraw();
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn device_event(&mut self, _el: &ActiveEventLoop, _id: DeviceId, event: DeviceEvent) {
+        if !self.rmb_down { return; }
+        if let DeviceEvent::MouseMotion { delta: (dx, dy) } = event {
+            if let Some(r) = self.renderer.as_mut() {
+                let sens = 0.0018; // tune
+                r.camera.add_yaw_pitch(-(dx as f32) * sens, -(dy as f32) * sens);
+            }
+        }
+    }
+
+
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        let attrs = WindowAttributes::default()
+            .with_title("riftphys-vis-tool (3D)")
+            .with_inner_size(LogicalSize::new(1280.0, 800.0));
+
+        let window = Arc::new(el.create_window(attrs).expect("window"));
+        let size = window.inner_size();
+        el.listen_device_events(DeviceEvents::Always);
+        // Arc clone here:
+        let mut renderer = pollster::block_on(Renderer::new(window.clone()));
+        renderer.resize(size.width.max(1), size.height.max(1));
+
+        renderer.camera.eye   = Vec3::new(-6.0, 4.0, 6.0);
+        renderer.camera.yaw   = 45_f32.to_radians();
+        renderer.camera.pitch = (-15_f32).to_radians();
+
+        self.renderer = Some(renderer);
+        self.window   = Some(window);
+        self.last = Instant::now();
+
+        if let Some(w) = self.window.as_ref() { w.request_redraw(); }
+    }
+
+
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if self.window.as_ref().map(|w| w.id()) != Some(id) {
+            return;
+        }
+        match event {
+            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::Resized(sz) => self.on_resize(sz),
+            WindowEvent::ScaleFactorChanged { .. } => {
+                if let Some(win) = self.window.as_ref() {
+                    self.on_resize(win.inner_size());
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                // dt for camera/world
+                let now = Instant::now();
+                let dt_real = (now - self.last).as_secs_f32();
+                self.last = now;
+
+                self.update_camera(dt_real);
+                self.step_world(dt_real);
+                self.render();
+            }
+            WindowEvent::KeyboardInput { event: ref ke, .. } => self.handle_key(ke, el),
+            _ => {
+                self.handle_mouse(&event);
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, _el: &ActiveEventLoop) {
+        if let Some(win) = self.window.as_ref() {
+            win.request_redraw();
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let event_loop = EventLoop::new()?;
+    let mut app = App::new();
+    event_loop.run_app(&mut app)?;
+    Ok(())
 }

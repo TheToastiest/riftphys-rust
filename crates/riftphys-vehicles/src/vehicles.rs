@@ -103,9 +103,9 @@ impl VehicleInstance {
                 continue;
             }
 
-            let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
-            let fwd_w = steer_q * GVec3::X;
-            let lat_w = steer_q * GVec3::Z;
+            // let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
+            // let fwd_w = steer_q * GVec3::X;
+            // let lat_w = steer_q * GVec3::Z;
             let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
             let fwd_w = steer_q * GVec3::X;
             let lat_w = steer_q * GVec3::Z;
@@ -170,11 +170,11 @@ impl VehicleInstance {
         let f_susp   = f_spring - f_damp;          // along +dir_w
 
         // Tire forces (very simple).
-        let steer = if self.p.steer_map.iter().any(|&k| k == idx) {
-            self.input.steer_rad
-        } else {
-            0.0
-        };
+        // let steer = if self.p.steer_map.iter().any(|&k| k == idx) {
+        //     self.input.steer_rad
+        // } else {
+        //     0.0
+        // };
         let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
         let fwd_w: V3a = v3a(steer_q * GVec3::X);
         let lat_w: V3a = v3a(steer_q * GVec3::Z);

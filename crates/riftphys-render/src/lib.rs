@@ -3,11 +3,13 @@
 //! - instanced debug primitives: box, sphere (UV), capsule (cyl + hemispheres)
 //! - simple directional light
 //! - grid lines
+use std::sync::Arc;
+use winit::window::Window;
 
 use std::f32::consts::PI;
-use glam::{Mat4, Vec2, Vec3, Vec4, Quat};
+use glam::{Mat4, Vec3, Quat};
 use wgpu::util::DeviceExt;
-use winit::window::Window;
+    // use std::num::NonZeroU32;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -125,7 +127,7 @@ struct Mesh {
 }
 
 pub struct Renderer {
-    surface: wgpu::Surface,
+    surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue:  wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -146,32 +148,41 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub async fn new(window: &Window) -> Self {
+    pub async fn new(window: Arc<Window>) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
-        let surface = unsafe { instance.create_surface(window) }.expect("create surface");
+
+        // SAFE + yields Surface<'static> when given Arc<Window>
+        let surface = instance.create_surface(window.clone())
+            .expect("create wgpu surface");
+
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions{
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
             force_fallback_adapter: false,
         }).await.expect("adapter");
+
         let (device, queue) = adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: Some("device"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
-            }, None
+            },
+            None
         ).await.expect("device");
         let format = surface.get_capabilities(&adapter).formats
             .into_iter().find(|f| f.is_srgb()).unwrap_or(wgpu::TextureFormat::Bgra8UnormSrgb);
-        let mut config = wgpu::SurfaceConfiguration {
+
+        let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
+            width:  size.width.max(1),
             height: size.height.max(1),
-            present_mode: wgpu::PresentMode::Fifo, // vsync
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode:   wgpu::CompositeAlphaMode::Auto,
             view_formats: vec![format],
+            desired_maximum_frame_latency: 2,
+
         };
         surface.configure(&device, &config);
 
@@ -221,18 +232,24 @@ impl Renderer {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
                 label: Some("mesh_pipe"),
                 layout: Some(&pl),
+                // MESH PIPELINE
                 vertex: wgpu::VertexState {
                     module: &mesh_shader,
                     entry_point: "vs_main",
                     buffers: &[Vertex::layout(), InstanceRaw::layout()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(), // <-- add this
                 },
-                fragment: Some(wgpu::FragmentState{
+                fragment: Some(wgpu::FragmentState {
                     module: &mesh_shader,
                     entry_point: "fs_main",
-                    targets: &[Some(wgpu::ColorTargetState{
-                        format, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
                     })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(), // <-- and this
                 }),
+
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
                     ..Default::default()
@@ -254,17 +271,22 @@ impl Renderer {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
                 label: Some("line_pipe"),
                 layout: Some(&pl),
+                // LINE PIPELINE
                 vertex: wgpu::VertexState {
                     module: &line_shader,
                     entry_point: "vs_main",
                     buffers: &[Vertex::layout()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(), // <-- add
                 },
-                fragment: Some(wgpu::FragmentState{
+                fragment: Some(wgpu::FragmentState {
                     module: &line_shader,
                     entry_point: "fs_main",
-                    targets: &[Some(wgpu::ColorTargetState{
-                        format, blend: Some(wgpu::BlendState::REPLACE), write_mask: wgpu::ColorWrites::ALL
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
                     })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(), // <-- add
                 }),
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::LineList,
@@ -287,7 +309,7 @@ impl Renderer {
         // grid
         let grid_lines = upload_lines(&device, &grid_lines_xz(200, 1.0));
 
-        Self {
+        Self  {
             surface, device, queue, config, depth: (depth_tex, depth_view),
             mesh_pipe, line_pipe,
             cam_buf, cam_bind, cam_bgl,
@@ -320,6 +342,42 @@ impl Renderer {
 
         // background pass
         {
+            // 1) Bucket instances by shape
+            let mut boxes    = Vec::<InstanceRaw>::new();
+            let mut spheres  = Vec::<InstanceRaw>::new();
+            let mut capsules = Vec::<InstanceRaw>::new();
+
+            for inst in instances {
+                match inst.kind {
+                    ShapeKind::Box { .. }      => boxes.push(inst.raw()),
+                    ShapeKind::Sphere { .. }   => spheres.push(inst.raw()),
+                    ShapeKind::CapsuleY { .. } => capsules.push(inst.raw()),
+                }
+            }
+
+            // 2) Create instance buffers OUTSIDE the pass so they outlive rpass
+            let boxes_buf = (!boxes.is_empty()).then(|| {
+                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("inst_buf.boxes"),
+                    contents: bytemuck::cast_slice(&boxes),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            });
+            let spheres_buf = (!spheres.is_empty()).then(|| {
+                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("inst_buf.spheres"),
+                    contents: bytemuck::cast_slice(&spheres),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            });
+            let capsules_buf = (!capsules.is_empty()).then(|| {
+                self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some("inst_buf.capsules"),
+                    contents: bytemuck::cast_slice(&capsules),
+                    usage: wgpu::BufferUsages::VERTEX,
+                })
+            });
+
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("main_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -327,12 +385,15 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color{ r: 0.05, g: 0.06, b: 0.08, a: 1.0 }),
-                        store: true,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth.1,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: true }),
+                    depth_ops: Some(wgpu::Operations {
+                        load:  wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
                     stencil_ops: None,
                 }),
                 timestamp_writes: None,
@@ -346,38 +407,37 @@ impl Renderer {
             rpass.set_index_buffer(self.grid_lines.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             rpass.draw_indexed(0..self.grid_lines.icount, 0, 0..1);
 
-            // meshes: bucket by shape
-            let mut boxes = Vec::new();
-            let mut spheres = Vec::new();
-            let mut capsules = Vec::new();
-            for inst in instances {
-                match inst.kind {
-                    ShapeKind::Box {..} => boxes.push(inst.raw()),
-                    ShapeKind::Sphere {..} => spheres.push(inst.raw()),
-                    ShapeKind::CapsuleY {..} => capsules.push(inst.raw()),
-                }
-            }
+            // meshes
             rpass.set_pipeline(&self.mesh_pipe);
             rpass.set_bind_group(0, &self.cam_bind, &[]);
 
-            // helper to draw a batch
-            let mut draw_batch = |mesh: &Mesh, raws: &mut Vec<InstanceRaw>| {
-                if raws.is_empty() { return; }
-                let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("inst_buf"),
-                    contents: bytemuck::cast_slice(raws.as_slice()),
-                    usage: wgpu::BufferUsages::VERTEX,
-                });
-                rpass.set_vertex_buffer(0, mesh.vbuf.slice(..));
+            // boxes
+            if let Some(buf) = &boxes_buf {
+                rpass.set_vertex_buffer(0, self.unit_box.vbuf.slice(..));
                 rpass.set_vertex_buffer(1, buf.slice(..));
-                rpass.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                rpass.draw_indexed(0..mesh.icount, 0, 0..(raws.len() as u32));
-                raws.clear();
-            };
+                rpass.set_index_buffer(self.unit_box.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                rpass.draw_indexed(0..self.unit_box.icount, 0, 0..(boxes.len() as u32));
+            }
 
-            draw_batch(&self.unit_box, &mut boxes);
-            draw_batch(&self.unit_sphere, &mut spheres);
-            draw_batch(&self.unit_capsule_y, &mut capsules);
+            // spheres
+            if let Some(buf) = &spheres_buf {
+                rpass.set_vertex_buffer(0, self.unit_sphere.vbuf.slice(..));
+                rpass.set_vertex_buffer(1, buf.slice(..));
+                rpass.set_index_buffer(self.unit_sphere.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                rpass.draw_indexed(0..self.unit_sphere.icount, 0, 0..(spheres.len() as u32));
+            }
+
+            // capsules
+            if let Some(buf) = &capsules_buf {
+                rpass.set_vertex_buffer(0, self.unit_capsule_y.vbuf.slice(..));
+                rpass.set_vertex_buffer(1, buf.slice(..));
+                rpass.set_index_buffer(self.unit_capsule_y.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                rpass.draw_indexed(0..self.unit_capsule_y.icount, 0, 0..(capsules.len() as u32));
+            }
+            //
+            // draw_batch(&self.unit_box, &mut boxes);
+            // draw_batch(&self.unit_sphere, &mut spheres);
+            // draw_batch(&self.unit_capsule_y, &mut capsules);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -521,7 +581,7 @@ fn capsule_y(segments: u32, rings_half: u32) -> (Vec<Vertex>, Vec<u32>) {
         let y_center = if hemi==0 { y0 } else { y1 };
         for ry in 1..=rng {
             let vty = ry as f32 / (rng as f32 + 1.0);
-            let phi = (vty * 0.5*PI);
+            let phi = vty * 0.5*PI;
             let cy = y_center + sign * phi.sin();
             let r = phi.cos();
             for x in 0..=seg {
@@ -600,7 +660,21 @@ fn vs_main(v: VsIn) -> VsOut {
   let M = mat4x4<f32>(v.i_m0, v.i_m1, v.i_m2, v.i_m3);
   let p_ws = (M * vec4<f32>(v.pos, 1.0)).xyz;
   // upper-left 3x3 for normal (assumes uniform scale)
-  let n_ws = normalize((mat3x3<f32>(M[0].xyz, M[1].xyz, M[2].xyz) * v.nrm));
+  let m0 = M[0].xyz;
+let m1 = M[1].xyz;
+let m2 = M[2].xyz;
+
+let sx = length(m0);
+let sy = length(m1);
+let sz = length(m2);
+
+// rotation columns (orthonormal)
+let r0 = m0 / sx;
+let r1 = m1 / sy;
+let r2 = m2 / sz;
+
+// normal matrix = R * inv(S)
+let n_ws = normalize(mat3x3<f32>(r0 * (1.0 / sx), r1 * (1.0 / sy), r2 * (1.0 / sz)) * v.nrm);
   var o: VsOut;
   o.pos_cs = uCam.view_proj * vec4<f32>(p_ws, 1.0);
   o.n_ws = n_ws;

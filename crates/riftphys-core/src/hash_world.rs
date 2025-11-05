@@ -1,6 +1,6 @@
 // core/src/hash_world.rs
 use blake3::Hasher;
-use crate::determinism::{DeterministicHash, Qf32, Qv3};
+use crate::determinism::{DeterministicHash};
 
 pub fn hash_world<W: DeterministicHash>(world: &W, epoch: u64, tick: u64, q: f32) -> blake3::Hash {
     let mut h = Hasher::new();
