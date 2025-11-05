@@ -20,6 +20,9 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-vox/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-world/examples" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-world/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-bridge-uriel/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-io/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-locomotion/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-render/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/tools/riftphys-vis-tool/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
