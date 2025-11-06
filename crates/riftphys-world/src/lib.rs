@@ -7,14 +7,15 @@ use riftphys_core::{
 };
 use riftphys_geom::{Aabb, Shape, MassProps, Material, aabb_of};
 use riftphys_melee::sweep_capsule_vs_aabb_two_spheres;
-
+use riftphys_materials as mats;
 use riftphys_collision::pairs_sap;
 use riftphys_dynamics::{Bodies, BodyDesc};
 use riftphys_viz::{ScheduleRecorder, DebugSettings, Ledger, LedgerEvent};
 use riftphys_gravity::{GravitySpec, eval as grav_eval, spec_id as gravity_epoch_id};
-use riftphys_articulation::Joints;
+use riftphys_articulation::{Joints, D6Joint};
 use crate::det_harness::{SimWorld, StepReport, Inputs, InputEvent};
 use riftphys_core::vec3;
+use glam::Quat; // for from_rotation_y
 
 use std::collections::BTreeMap;
 use riftphys_terrain::HeightField;
@@ -63,6 +64,7 @@ struct Contact {
 pub struct WorldBuilder {
     pub bodies: usize,
     pub colliders: usize,
+
 }
 impl WorldBuilder {
     pub fn new() -> Self { Self { bodies: 128, colliders: 128 } }
@@ -124,13 +126,21 @@ pub struct World {
     balances: Vec<BalanceInstance>,
 
     warm_cache: BTreeMap<(u32, u32), WarmImp>,
-
+    last_normal_impulse: Vec<f32>,
 }
 
 impl World {
     // Read-only helpers for the viewer/debuggers.
     pub fn num_bodies(&self) -> u32 { self.bodies.len() as u32 }
-
+    pub fn primary_shape(&self, body: BodyId) -> Option<riftphys_geom::Shape> {
+        for c in &self.colliders {
+            if c.body == body {
+                return Some(c.shape);
+            }
+        }
+        None
+    }
+    #[inline] pub fn tick_index(&self) -> u64 { self.tick }
     pub fn for_each_collider<F: FnMut(u32, BodyId, &Shape, &Aabb)>(&self, mut f: F) {
         for (i, c) in self.colliders.iter().enumerate() {
             f(i as u32, c.body, &c.shape, &c.aabb);
@@ -164,7 +174,7 @@ impl World {
             accel_comps: vec![None; bodies],
             balances: Vec::new(),
             warm_cache: BTreeMap::new(),
-
+            last_normal_impulse: vec![0.0; bodies],
         }
     }
     pub fn add_balance_controller(
@@ -198,7 +208,28 @@ impl World {
             aero, prop, ref_area_m2, throttle01, forward_dir_world,
         });
     }
+    /// Deterministically set a body's pose at a tick boundary.
+    /// Call only outside `World::step()` (e.g., before the step) to keep hashes stable.
+    pub fn set_body_pose(&mut self, id: BodyId, pose: Isometry) {
+        self.bodies.set_pose(id.0, pose);
 
+        // Optional immediate AABB refresh so debug/viewers see it right away.
+        // (It will be recomputed again in UpdateAabbsPre during the step.)
+        for c in &mut self.colliders {
+            if c.body == id {
+                c.aabb = aabb_of(&c.shape, &pose);
+            }
+        }
+    }
+    /// Convenience: rotate about +Y by `dy` radians (pose write).
+    /// Use this at double-stance frames so both ACTIVE/SHADOW apply the same delta.
+    pub fn yaw_body(&mut self, id: BodyId, dy: f32) {
+        if dy == 0.0 { return; }
+        let mut p = self.bodies.pose(id.0);
+        let dq = Quat::from_rotation_y(dy);
+        p.rot = (dq * p.rot).normalize();
+        self.set_body_pose(id, p);
+    }
     /// Optional convenience to update throttle per tick from inputs.
     pub fn set_body_throttle(&mut self, body: BodyId, t: f32) {
         if let Some(Some(ac)) = self.accel_comps.get_mut(body.0 as usize) {
@@ -254,8 +285,12 @@ impl World {
             let vn = v.dot(n);
             if vn < 0.0 { v -= n * vn; }
 
-            // advance remainder of the step
-            let p_after = p_impact + v * (dt * (1.0 - t));
+        // advance remainder of the step with gravity + aero/prop for this tick
+        let (a_grav, a_extra) = Self::eval_extra_accel(&self.models, &self.bodies, &self.accel_comps,
+                self.epoch_id, self.tick, id, pose, self.bodies.vel(id), &self.gravity_proc, dt);
+        let a_total = a_grav + a_extra;
+        v += a_total * dt; // simple: apply full-tick accel; we already resolved TOI once
+        let p_after = p_impact + v * (dt * (1.0 - t));
 
             self.bodies.set_pose(id, Isometry { pos: p_after, rot: pose.rot });
             self.bodies.set_vel (id, Velocity { lin: v, ang: self.bodies.vel(id).ang });
@@ -363,6 +398,57 @@ impl World {
         let hit = riftphys_melee::sweep_blade_points(tip_p0, tip_v, tip_r, mid_p0, mid_v, mid_r, &boxes, dt)?;
         Some((hit.target_index, hit.toi, hit.normal))
     }
+    #[inline]
+    fn eval_extra_accel(models: &ModelRegistry,
+                        bodies: &Bodies,
+                        accel_comps: &Vec<Option<AccelComp>>,
+                        epoch_id: u64,
+                        tick: u64,
+                        i: u32,
+                        pose: Isometry,
+                        vel: Velocity,
+                        gravity_proc: &GravitySpec,
+                        dt: f32) -> (Vec3, Vec3) {
+        // returns (a_grav, a_extra) where a_extra = aero + prop like the fallback path
+        let mut a_grav = grav_eval(gravity_proc, pose.pos);
+        let mut a_extra = Vec3::ZERO;
+
+        if let Some(Some(ac)) = accel_comps.get(i as usize) {
+            let inv_m = bodies.inv_mass_of(i);
+            if inv_m > 0.0 {
+                let mass = 1.0 / inv_m;
+                let fwd_w = ac.forward_dir_world.unwrap_or_else(|| pose.rot * Vec3::new(1.0, 0.0, 0.0));
+                let v_w = vel.lin;
+                let speed = v_w.length();
+                let vhat = if speed > 1e-6 { v_w / speed } else { fwd_w };
+                let cos_a = fwd_w.dot(vhat).clamp(-1.0, 1.0);
+                let alpha_rad = cos_a.acos();
+                let aq = AeroQuery {
+                    vel_world: [v_w.x, v_w.y, v_w.z],
+                    ang_vel_world: [vel.ang.x, vel.ang.y, vel.ang.z],
+                    orientation: pose.rot,
+                    area: ac.ref_area_m2,
+                    mass,
+                    altitude: pose.pos.y,
+                    alpha_rad,
+                };
+                let pq = PropQuery {
+                    throttle01: ac.throttle01,
+                    forward_dir_world: [fwd_w.x, fwd_w.y, fwd_w.z],
+                    mass,
+                };
+                if let Some(h) = ac.aero {
+                    let a = models.aero(h).accel_contrib(&StepCtx { dt, tick, epoch: EpochId(epoch_id) }, aq);
+                    a_extra += Vec3::new(a[0], a[1], a[2]);
+                }
+                if let Some(h) = ac.prop {
+                    let a = models.prop(h).accel_contrib(&StepCtx { dt, tick, epoch: EpochId(epoch_id) }, pq);
+                    a_extra += Vec3::new(a[0], a[1], a[2]);
+                }
+            }
+        }
+        (a_grav, a_extra)
+    }
 
     /* ---------- CCD: sphere vs boxes (TOI) ---------- */
     fn ccd_integrate_sphere(&mut self, id: u32, dt: Scalar) -> bool {
@@ -413,9 +499,12 @@ impl World {
         let mut new_vel = vel;
         if vn < 0.0 { new_vel -= normal * vn; }
 
+       let (a_grav, a_extra) = Self::eval_extra_accel(&self.models, &self.bodies, &self.accel_comps,
+                                                self.epoch_id, self.tick, id, pose, self.bodies.vel(id), &self.gravity_proc, dt);
+        let a_total = a_grav + a_extra;
         let rem_dt = dt - mid_dt;
-        p += new_vel * rem_dt;
-
+         new_vel += a_total * dt;
+         p += new_vel * rem_dt;
         self.bodies.set_pose(id, Isometry { pos: p, rot: pose.rot });
         self.bodies.set_vel(id, Velocity { lin: new_vel, ang: self.bodies.vel(id).ang });
         true
@@ -448,7 +537,7 @@ impl World {
                 if self.ccd_integrate_capsule(i, r, hh, dt) {
                     let a = grav_eval(&self.gravity_proc, self.bodies.pose(i).pos);
                     let dv = a * dt;
-                    self.ledger.push(LedgerEvent::Integrate { id: i, a, dv });
+                    // self.ledger.push(LedgerEvent::Integrate { id: i, a, dv });
                     continue;
                 }
             }
@@ -457,7 +546,7 @@ impl World {
             if self.ccd_integrate_sphere(i, dt) {
                 let a = grav_eval(&self.gravity_proc, self.bodies.pose(i).pos);
                 let dv = a * dt;
-                self.ledger.push(LedgerEvent::Integrate { id: i, a, dv });
+                // self.ledger.push(LedgerEvent::Integrate { id: i, a, dv });
                 continue;
             }
 
@@ -466,7 +555,51 @@ impl World {
             let mut vel = self.bodies.vel(i);
 
             // Gravity (existing)
-            let a_grav = grav_eval(&self.gravity_proc, pose.pos);
+            // 1) Gravity magnitude from the active spec
+            let mut a_grav = grav_eval(&self.gravity_proc, pose.pos);
+            let gmag = a_grav.length();
+
+            if gmag > 1.0e-6 {
+                // 2) If we are near a STATIC sphere collider (planet “ground”), steer gravity to radial “down”
+                let mut best_gap: f32 = f32::INFINITY;
+                let mut radial_down: Option<Vec3> = None;
+
+                for col in &self.colliders {
+                    if let Shape::Sphere { r } = col.shape {
+                        // treat only static spheres as planets
+                        if self.bodies.inv_mass_of(col.body.0) == 0.0 {
+                            let center = self.bodies.pose(col.body.0).pos;
+                            let rv = pose.pos - center;
+                            let dist = rv.length();
+                            if dist > 1.0e-6 {
+                                let gap = dist - r;
+                                if gap < best_gap && gap < 5.0 {
+                                    best_gap = gap;
+                                    radial_down = Some((-rv / dist).normalize()); // toward center
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(rd) = radial_down {
+                    // lock direction to planet radial; keep the magnitude from spec
+                    a_grav = rd * gmag;
+                } else if let Some((h_world, n_hf)) = self.sample_terrain_height_normal(pose.pos.x, pose.pos.z) {
+                    // 3) Not near a planet sphere: blend toward HF normal in a ~50 m band above surface
+                    let height_above = pose.pos.y - h_world;
+                    if height_above.is_finite() {
+                        let t = (1.0 - (height_above / 50.0)).clamp(0.0, 1.0);
+                        if t > 0.0 {
+                            let dir_spec = a_grav / gmag;
+                            let dir_hf   = (-n_hf).normalize();
+                            let mix      = (dir_spec * (1.0 - t) + dir_hf * t).normalize();
+                            a_grav = mix * gmag;
+                        }
+                    }
+                }
+            }
+
 
             // Phase 11 Accel (post-gravity): aero + propulsion if present
             let mut a_extra = Vec3::ZERO;
@@ -601,6 +734,16 @@ impl World {
             contacts_culled.extend(v.into_iter());
         }
         let mut contacts = contacts_culled;
+        // Ensure final orientation is A -> B (robust against future edits)
+        for c in &mut contacts {
+            let a = self.colliders[c.a_collider].body;
+            let b = self.colliders[c.b_collider].body;
+            let pa = self.bodies.pose(a.0).pos;
+            let pb = self.bodies.pose(b.0).pos;
+            if c.normal.dot(pb - pa) < 0.0 {
+                c.normal = -c.normal;
+            }
+        }
 
         // ---- Quantize normals and depths (kill ulp jitter)
         let q = 1.0e-6f32;
@@ -660,6 +803,7 @@ impl World {
             let mut v = self.bodies.vel(b.pelvis.0);
             v.lin.x += a_xz.x * dt;
             v.lin.z += a_xz.y * dt;
+
             // 3) telemetry (deterministic, controller-specific)
             self.bodies.set_vel(b.pelvis.0, v);
             self.ledger.push(LedgerEvent::BalanceAccel {
@@ -685,6 +829,7 @@ impl World {
         let contacts_len = contacts.len() as u32;
         if contacts_len > 0 {
             self.solve_contacts(&contacts);
+
             self.schedule.push(StepStage::UpdateAabbsPost);
             for idx in 0..self.colliders.len() {
                 let b = self.colliders[idx].body;
@@ -693,7 +838,21 @@ impl World {
                 self.colliders[idx].aabb = aabb_of(&shape, &pose);
             }
         }
-
+        {
+            let mut touching = vec![false; self.bodies.len() as usize];
+            for c in &contacts {
+                touching[self.colliders[c.a_collider].body.0 as usize] = true;
+                touching[self.colliders[c.b_collider].body.0 as usize] = true;
+            }
+            // for i in 0..(self.bodies.len() as u32) {
+            //     if self.bodies.is_dynamic(i) && touching[i as usize] {
+            //         let mut v = self.bodies.vel(i);
+            //         if v.lin.length_squared() < 5.0e-10 { v.lin = Vec3::ZERO; }
+            //         if v.ang.length_squared() < 5.0e-7 { v.ang = Vec3::ZERO; }
+            //         self.bodies.set_vel(i, v);
+            //     }
+            // }
+        }
         // Debug print + JSONL dump every N ticks
         if self.debug.print_every != 0 && (self.tick as u32) % self.debug.print_every == 0 {
             self.print_debug_block(&contacts);
@@ -784,11 +943,18 @@ impl World {
         let dist = n.length(); if dist >= r { return None; }
         if dist > 1.0e-6 { n /= dist; } else { n = Vec3::new(0.0, 1.0, 0.0); }
         let depth = r - dist;
-        let normal = if flip {  n } else { -n };
-        Some(Contact { a_collider: ci, b_collider: cj, normal, depth })
+        // n is BOX -> SPHERE; A is the SPHERE, B is the BOX
+        let normal = -n;  // always A( sphere ) -> B( box )
+        Some(Contact { a_collider: si, b_collider: bi, normal, depth })
+
     }
     pub fn set_body_vel(&mut self, id: BodyId, vel: Velocity) {
         self.bodies.set_vel(id.0, vel);
+    }
+    #[inline]
+    pub fn normal_force(&self, body: BodyId, dt: f32) -> f32 {
+        // impulse (N·s) / dt ≈ average normal force over the step
+        self.last_normal_impulse.get(body.0 as usize).copied().unwrap_or(0.0) / dt
     }
 
     fn contact_capsule_box(&self, ci: usize, cj: usize) -> Option<Contact> {
@@ -808,15 +974,28 @@ impl World {
         let dist = n.length(); if dist >= r { return None; }
         if dist > 1.0e-6 { n /= dist; } else { n = Vec3::new(0.0, 1.0, 0.0); }
         let depth = r - dist;
-        let normal = if flip {  n } else { -n };
-        Some(Contact { a_collider: ci, b_collider: cj, normal, depth })
+        // n is BOX -> CAPSULE; A is the CAPSULE, B is the BOX
+        let normal = -n;  // always A( capsule ) -> B( box )
+        Some(Contact { a_collider: cap_i, b_collider: box_i, normal, depth })
+
     }
 
+    pub fn add_ball_joint(&mut self, a: BodyId, b: BodyId, fa: Isometry, fb: Isometry) -> JointId {
+        self.joints.add_ball(a, b, fa, fb)
+    }
+
+    pub fn add_hinge_joint(&mut self, a: BodyId, b: BodyId, fa: Isometry, fb: Isometry, hinge_axis: usize) -> JointId {
+        self.joints.add_hinge(a, b, fa, fb, hinge_axis)
+    }
+
+    pub fn add_d6_joint(&mut self, j: D6Joint) -> JointId {
+        self.joints.add_d6(j)
+    }
     /* ---------- Solver (normal + friction) ---------- */
     fn solve_contacts(&mut self, contacts: &[Contact]) {
-        let iterations = 8;
-        let slop = 0.001;
-        let beta = 0.8;
+        let iterations = 12;
+        let slop = 0.010;
+        let beta = 0.10;
 
         // Build warmstart vector aligned with `contacts` order
         let mut warms: Vec<WarmImp> = Vec::with_capacity(contacts.len());
@@ -828,7 +1007,9 @@ impl World {
             };
             warms.push(*self.warm_cache.get(&key).unwrap_or(&WarmImp::default()));
         }
-
+        for v in &mut self.last_normal_impulse {
+            *v = 0.0;
+        }
         // Track impulses to store for next tick (final iteration values)
         let mut next_warms: Vec<WarmImp> = vec![WarmImp::default(); contacts.len()];
 
@@ -853,12 +1034,13 @@ impl World {
                     }
                 }
 
-
+                // Effective pair properties (order-independent, deterministic)
                 let ma = self.colliders[c.a_collider].material;
                 let mb = self.colliders[c.b_collider].material;
-                let restitution = ma.restitution.max(mb.restitution);
-                let mu_s = (ma.mu_s * mb.mu_s).abs().sqrt();
-                let mu_k = (ma.mu_k * mb.mu_k).abs().sqrt();
+                let pair = mats::pair_props(ma.id, mb.id);
+
+                // Keep restitution from the pair
+                let restitution = pair.restitution;
 
                 let va = self.bodies.vel(ai);
                 let vb = self.bodies.vel(bi);
@@ -872,6 +1054,10 @@ impl World {
                     let imp_n = n * jn;
                     self.bodies.apply_impulse(ai, -imp_n);
                     self.bodies.apply_impulse(bi,  imp_n);
+                    // Accumulate magnitude for a quick “normal force” proxy (per body, this tick)
+                    self.last_normal_impulse[ai as usize] += jn.max(0.0);
+                    self.last_normal_impulse[bi as usize] += jn.max(0.0);
+
                     self.ledger.push(LedgerEvent::ImpulseN { a: ai, b: bi, jn });
                 }
                 next_warms[idx].jn = jn;
@@ -888,6 +1074,7 @@ impl World {
 
                 // Friction (2 tangents)
                 if jn > 0.0 || c.depth > slop {
+                    // relative velocity split
                     let va2 = self.bodies.vel(ai);
                     let vb2 = self.bodies.vel(bi);
                     let vrel = vb2.lin - va2.lin;
@@ -900,29 +1087,38 @@ impl World {
 
                     let denom = inv_a + inv_b;
                     if denom > 0.0 {
+                        // desired impulses that would zero tangential velocity
                         let jt1_des = -vt1 / denom;
                         let jt2_des = -vt2 / denom;
-                        let jt_des_len = (jt1_des*jt1_des + jt2_des*jt2_des).sqrt();
-                        let jt_max_static = mu_s * jn;
+                        let jt_des_len = (jt1_des * jt1_des + jt2_des * jt2_des).sqrt();
+
+                        // --- NEW: speed-dependent kinetic coefficient (Stribeck), static cone from pair.mu_s
+                        let vt_mag = v_t.length();
+                        let mu_k_eff = mats::mu_dynamic(&pair, vt_mag); // internally quantized to 1e-6
+                        let jt_max_static = pair.mu_s * jn;
 
                         let (jt1, jt2) = if jt_des_len <= jt_max_static || jn == 0.0 {
+                            // stick region
                             (jt1_des, jt2_des)
                         } else {
-                            let jt_max_kin = mu_k * jn;
+                            // slip region capped by kinetic cone
+                            let jt_max_kin = mu_k_eff * jn;
                             let scale = if jt_des_len > 1.0e-9 { jt_max_kin / jt_des_len } else { 0.0 };
                             (jt1_des * scale, jt2_des * scale)
                         };
 
-                        // Remember for next warmstart
+                        // warmstart record
                         next_warms[idx].jt1 = jt1;
                         next_warms[idx].jt2 = jt2;
 
+                        // apply
                         let jt_vec = t1 * jt1 + t2 * jt2;
                         self.bodies.apply_impulse(ai, -jt_vec);
                         self.bodies.apply_impulse(bi,  jt_vec);
                         self.ledger.push(LedgerEvent::ImpulseT { a: ai, b: bi, jt1, jt2 });
                     }
                 }
+
             }
         }
 

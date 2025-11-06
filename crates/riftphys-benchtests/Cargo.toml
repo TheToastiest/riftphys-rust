@@ -11,11 +11,12 @@ path = "src/epoch_swap.rs"
 name = "bench_perf"
 path = "src/bench_perf.rs"
 
-#[[bin]]
-#name = "epoch_shadow"
-#path = "src/epoch_shadow.rs"
+[features]
+default = []         # Earth-only
+shadow_epoch = []    # Enable Mars/Earth lockstep shadow run
 
 [dependencies]
+ctrlc = "3"
 riftphys-world = { path = "../riftphys-world" }
 riftphys-core  = { path = "../riftphys-core" }
 riftphys-geom  = { path = "../riftphys-geom" }
@@ -29,6 +30,8 @@ riftphys-vehicles = { path = "../riftphys-vehicles" }
 riftphys-controllers = { path = "../riftphys-controllers" }
 riftphys-locomotion = { path = "../riftphys-locomotion" }
 riftphys-bridge-uriel = { path = "../riftphys-bridge-uriel" }
-
+riftphys-riftnet = { path = "../riftphys-riftnet" }
+riftphys-io = { path = "../riftphys-io" }
 glam = { workspace = true }
 serde_json = "1.0.145"
+anyhow = "1.0.100"

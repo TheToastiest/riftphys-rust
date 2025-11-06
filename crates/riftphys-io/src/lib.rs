@@ -3,7 +3,7 @@ use blake3::Hasher;
 use glam::{Mat4, Vec3};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::Path};
-
+pub mod rig_physics;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Joint {
     pub name: String,

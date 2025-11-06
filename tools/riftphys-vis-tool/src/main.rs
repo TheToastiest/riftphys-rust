@@ -1,4 +1,7 @@
 //! riftphys-vis-tool — 3D Visual Debugger (winit 0.30 + riftphys-render/wgpu 0.20)
+
+mod riftnet_client;
+use parking_lot::Mutex;
 //
 // Controls:
 //   Mouse Right-Button + move  -> look around (360° yaw, ±89° pitch)
@@ -30,7 +33,6 @@ use riftphys_gravity::GravitySpec;
 use riftphys_aero::{CombinedAero, FlatPlateDrag, ISA, SimpleWing};
 use riftphys_acceleration::{SimplePropulsion, ThrottleCurve};
 use riftphys_controllers::BalanceParams;
-
 /* ---------------- env helpers ---------------- */
 fn env_u32(key: &str, default: u32) -> u32 {
     std::env::var(key).ok().and_then(|s| s.parse().ok()).unwrap_or(default)
@@ -198,6 +200,8 @@ struct App {
     last_cursor: Option<PhysicalPosition<f64>>,
     move_speed: f32,
     sphere_id: BodyId,
+    net: Option<riftnet_client::NetViewer>,
+    net_ents: Arc<Mutex<Vec<riftphys_riftnet::wire::NetEnt>>>,
 }
 
 impl App {
@@ -221,6 +225,8 @@ impl App {
             last_cursor: None,
             move_speed: 5.0, // m/s base
             sphere_id,
+            net: None,
+            net_ents: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -299,27 +305,79 @@ impl App {
     }
 
     fn render(&mut self) {
-        let (r, w) = match (self.renderer.as_mut(), self.world.as_ref()) {
-            (Some(r), Some(w)) => (r, w),
-            _ => return,
-        };
-        let instances = build_instances(w, &self.drawlist);
+        let r = match self.renderer.as_mut() { Some(r) => r, None => return };
+        fn color_for(kind: u32, scale: glam::Vec3, id: u32) -> glam::Vec3 {
+            // Heuristic: very large spheres => planet
+            if kind == 1 && scale.max_element() > 1.0e5 {
+                return glam::Vec3::new(0.35, 0.45, 0.95); // planet: cool blue
+            }
+            match kind {
+                1 => glam::Vec3::new(0.95, 0.85, 0.45),       // small spheres: warm gold
+                2 => glam::Vec3::new(0.30, 0.82, 0.62),       // boxes: teal
+                3 => glam::Vec3::new(0.86, 0.42, 0.88),       // capsules: magenta
+                _ => { // fallback: hash id to a pastel
+                    let h = id.wrapping_mul(2654435761);
+                    let r = ((h >>  0) & 255) as f32 / 255.0;
+                    let g = ((h >>  8) & 255) as f32 / 255.0;
+                    let b = ((h >> 16) & 255) as f32 / 255.0;
+                    glam::Vec3::new(0.6 + 0.4*r, 0.6 + 0.4*g, 0.6 + 0.4*b)
+                }
+            }
+        }
+    
+        // try net instances first
+        let mut net_instances = Vec::new();
+        {
+            let ents = self.net_ents.lock();
+            if !ents.is_empty() {
+                net_instances.reserve(ents.len());
+                for e in ents.iter() {
+                    let p = glam::Vec3::new(e.px, e.py, e.pz);
+                    let q = glam::Quat::from_xyzw(e.qx, e.qy, e.qz, e.qw);
+                    let scale = glam::Vec3::new(e.sx, e.sy, e.sz);
+                    let kind = match e.kind {
+                        1 => ShapeKind::Sphere { r: e.sx },
+                        2 => ShapeKind::Box    { hx: e.sx, hy: e.sy, hz: e.sz },
+                        3 => {
+                            let hh = 2.0 * e.sy - e.sx;             // sy = (hh + r)/2
+                            ShapeKind::CapsuleY { r: e.sx, hh }
+                        }
+                        _ => ShapeKind::Sphere { r: 0.25 },
+                    };
+                    let color = color_for(e.kind, scale, e.id);     // <— use the helper
+                    net_instances.push(Instance {
+                        model: trs(p, q, scale),
+                        color,
+                        kind,
+                    });
+
+                }
+            }
+        }
+
+
+        let instances =
+            if !net_instances.is_empty() {
+                net_instances
+            } else {
+                // fall back to local world (your existing path)
+                let w = match self.world.as_ref() { Some(w) => w, None => return };
+                build_instances(w, &self.drawlist)
+            };
+
         match r.render(&instances) {
             Ok(()) => {}
-            Err(SurfaceError::Lost | SurfaceError::Outdated) => {
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 if let Some(win) = self.window.as_ref() {
                     let size = win.inner_size();
                     r.resize(size.width.max(1), size.height.max(1));
                 }
             }
-            Err(SurfaceError::OutOfMemory) => std::process::exit(1),
+            Err(wgpu::SurfaceError::OutOfMemory) => std::process::exit(1),
             Err(_) => {}
         }
-
-        if let Some(win) = self.window.as_ref() {
-            win.request_redraw();
-        }
     }
+
 }
 
 impl ApplicationHandler for App {
@@ -338,6 +396,7 @@ impl ApplicationHandler for App {
         let attrs = WindowAttributes::default()
             .with_title("riftphys-vis-tool (3D)")
             .with_inner_size(LogicalSize::new(1280.0, 800.0));
+        self.net = riftnet_client::NetViewer::connect("127.0.0.1", 49111, self.net_ents.clone());
 
         let window = Arc::new(el.create_window(attrs).expect("window"));
         let size = window.inner_size();
@@ -391,6 +450,9 @@ impl ApplicationHandler for App {
         if let Some(win) = self.window.as_ref() {
             win.request_redraw();
         }
+        if let Some(n) = &self.net { n.poll(); }
+        if let Some(win) = self.window.as_ref() { win.request_redraw(); }
+
     }
 }
 

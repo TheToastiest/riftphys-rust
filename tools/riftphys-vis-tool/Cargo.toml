@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+libloading = "0.8"
+once_cell  = "1.19"
 # 3D renderer (your crate)
 riftphys-render = { path = "../../crates/riftphys-render" }
 
@@ -17,7 +19,7 @@ riftphys-aero = { path = "../../crates/riftphys-aero" }
 riftphys-acceleration = { path = "../../crates/riftphys-acceleration" }
 riftphys-controllers = { path = "../../crates/riftphys-controllers" }
 riftphys-viz = { path = "../../crates/riftphys-viz" }
-
+riftphys-riftnet = { path = "../../crates/riftphys-riftnet" }
 # Windowing (same as workspace: =0.30.12)
 winit = { version = "0.30.12" }
 wgpu = "0.20"
@@ -25,3 +27,5 @@ wgpu = "0.20"
 # To block_on async renderer creation
 pollster = "0.3"
 anyhow = "1.0.100"
+parking_lot = "0.12.5"
+bytemuck = "1.24.0"

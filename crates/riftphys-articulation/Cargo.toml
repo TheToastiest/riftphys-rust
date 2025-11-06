@@ -7,3 +7,4 @@ edition = "2021"
 riftphys-core     = { path = "../riftphys-core" }
 riftphys-dynamics = { path = "../riftphys-dynamics" }
 riftphys-controllers = { path = "../riftphys-controllers" }
+glam = { workspace = true }
