@@ -1,11 +1,57 @@
+pub mod vis;
+
 use std::cmp::Ordering;
 
 /// Material catalog is fixed and deterministic.
 /// Add more IDs here; order matters only for display (pair mixing is symmetric).
+#[repr(u8)]
 #[derive(Copy,Clone,Debug,Eq,PartialEq,Hash)]
 pub enum MaterialId {
-    Default, Ice, Rubber, Steel, Grit,
-    Wood, Concrete, Asphalt, Leather, Skin, Carpet, Glass,
+    // Core / previously present
+    Default, Ice, Rubber, Steel, Grit, Wood, Concrete, Asphalt, Leather, Skin, Carpet, Glass,
+    Titanium, Aluminum, Marble, Diamond,
+
+    // Common wet variants
+    ConcreteWet, AsphaltWet,
+
+    // Metals
+    StainlessSteel, CastIron, WroughtIron, CarbonSteel,
+    Copper, Brass, Bronze, TitaniumAlloy, Magnesium, Nickel, Chromium,
+    Zinc, Tin, Lead, Gold, Silver, Platinum, AnodizedAluminum,
+
+    // Stones / Minerals
+    Granite, Limestone, Sandstone, Slate, Basalt, Obsidian, Travertine, Quartz,
+
+    // Gemstones
+    Ruby, Sapphire, Emerald, Topaz, Amethyst, Citrine, Aquamarine, Garnet,
+    Opal, Jade, Onyx, Turquoise, Peridot, Moonstone,
+
+    // Ceramics & Glass
+    TemperedGlass, BorosilicateGlass, Porcelain,
+    CeramicGlazed, CeramicUnglazed, Earthenware, Stoneware,
+    TileGlazed, TileUnglazed,
+
+    // Polymers
+    PTFE, UHMWPE, HDPE, LDPE, Polypropylene, POM_Delrin, Nylon,
+    ABS, PVC_Rigid, Polycarbonate, Acrylic_PMMA, PEEK, PET, Polyurethane,
+
+    // Rubbers
+    RubberSoft, RubberHard, SiliconeRubber, NeopreneRubber, NitrileRubber,
+
+    // Woods
+    Oak, Maple, Pine, Birch, Bamboo, Teak, Plywood, MDF,
+
+    // Fabrics / soft
+    Cotton, Wool, Denim, Silk, Polyester, Felt, Canvas,
+
+    // Granular / Soils
+    SandDry, SandWet, ClayDry, ClayWet, SnowFresh, SnowPacked, Gravel, Mud,
+
+    // Paper / Card
+    Paper, Cardboard, CorrugatedCardboard,
+
+    // Composites / Misc
+    CarbonFiberEpoxy, Fiberglass, GripTape, PaintedSteel, EVA_Foam, PU_Foam,
 }
 
 /// Canonical single-material properties.
@@ -34,20 +80,152 @@ pub struct MatPairProps {
 pub fn props(id: MaterialId) -> MatProps {
     use MaterialId::*;
     match id {
-        Default  => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.0,  stribeck_v: 0.10 },
-        Ice      => MatProps { mu_s: 0.03, mu_k: 0.02, restitution: 0.02, stribeck_v: 0.02 },
-        Rubber   => MatProps { mu_s: 1.20, mu_k: 1.00, restitution: 0.80, stribeck_v: 0.15 },
-        Steel    => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.10, stribeck_v: 0.05 },
+        // Core
+        Default  => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.10, stribeck_v: 0.08 },
+        Ice      => MatProps { mu_s: 0.05, mu_k: 0.03, restitution: 0.02, stribeck_v: 0.02 },
+        Rubber   => MatProps { mu_s: 1.10, mu_k: 0.95, restitution: 0.80, stribeck_v: 0.15 },
+        Steel    => MatProps { mu_s: 0.70, mu_k: 0.55, restitution: 0.50, stribeck_v: 0.05 },
         Grit     => MatProps { mu_s: 1.30, mu_k: 1.05, restitution: 0.00, stribeck_v: 0.12 },
-        Wood     => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.05, stribeck_v: 0.08 },
+        Wood     => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.08, stribeck_v: 0.10 },
         Concrete => MatProps { mu_s: 0.80, mu_k: 0.70, restitution: 0.00, stribeck_v: 0.10 },
         Asphalt  => MatProps { mu_s: 0.90, mu_k: 0.80, restitution: 0.00, stribeck_v: 0.12 },
         Leather  => MatProps { mu_s: 0.80, mu_k: 0.60, restitution: 0.20, stribeck_v: 0.10 },
-        Skin     => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.15, stribeck_v: 0.06 },
-        Carpet   => MatProps { mu_s: 1.10, mu_k: 0.95, restitution: 0.00, stribeck_v: 0.15 },
-        Glass    => MatProps { mu_s: 0.40, mu_k: 0.35, restitution: 0.30, stribeck_v: 0.04 },
+        Skin     => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.10, stribeck_v: 0.06 },
+        Carpet   => MatProps { mu_s: 1.10, mu_k: 0.95, restitution: 0.00, stribeck_v: 0.18 },
+        Glass    => MatProps { mu_s: 0.40, mu_k: 0.30, restitution: 0.65, stribeck_v: 0.04 },
+        Titanium => MatProps { mu_s: 0.90, mu_k: 0.60, restitution: 0.35, stribeck_v: 0.06 },
+        Aluminum => MatProps { mu_s: 0.61, mu_k: 0.47, restitution: 0.40, stribeck_v: 0.05 },
+        Marble   => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.12, stribeck_v: 0.08 },
+        Diamond  => MatProps { mu_s: 0.20, mu_k: 0.15, restitution: 0.85, stribeck_v: 0.04 },
+
+        // Common wet variants
+        ConcreteWet => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.00, stribeck_v: 0.10 },
+        AsphaltWet  => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.00, stribeck_v: 0.12 },
+
+        // Metals
+        StainlessSteel   => MatProps { mu_s: 0.74, mu_k: 0.57, restitution: 0.50, stribeck_v: 0.05 },
+        CastIron         => MatProps { mu_s: 0.40, mu_k: 0.29, restitution: 0.20, stribeck_v: 0.05 },
+        WroughtIron      => MatProps { mu_s: 0.55, mu_k: 0.40, restitution: 0.30, stribeck_v: 0.05 },
+        CarbonSteel      => MatProps { mu_s: 0.70, mu_k: 0.55, restitution: 0.50, stribeck_v: 0.05 },
+        Copper           => MatProps { mu_s: 0.53, mu_k: 0.36, restitution: 0.40, stribeck_v: 0.05 },
+        Brass            => MatProps { mu_s: 0.44, mu_k: 0.35, restitution: 0.40, stribeck_v: 0.05 },
+        Bronze           => MatProps { mu_s: 0.42, mu_k: 0.34, restitution: 0.40, stribeck_v: 0.05 },
+        TitaniumAlloy    => MatProps { mu_s: 0.85, mu_k: 0.58, restitution: 0.35, stribeck_v: 0.06 },
+        Magnesium        => MatProps { mu_s: 0.50, mu_k: 0.35, restitution: 0.40, stribeck_v: 0.05 },
+        Nickel           => MatProps { mu_s: 0.40, mu_k: 0.33, restitution: 0.45, stribeck_v: 0.05 },
+        Chromium         => MatProps { mu_s: 0.43, mu_k: 0.30, restitution: 0.55, stribeck_v: 0.05 },
+        Zinc             => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.40, stribeck_v: 0.05 },
+        Tin              => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.40, stribeck_v: 0.05 },
+        Lead             => MatProps { mu_s: 1.00, mu_k: 0.80, restitution: 0.20, stribeck_v: 0.06 },
+        Gold             => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.40, stribeck_v: 0.05 },
+        Silver           => MatProps { mu_s: 0.55, mu_k: 0.40, restitution: 0.60, stribeck_v: 0.05 },
+        Platinum         => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.50, stribeck_v: 0.05 },
+        AnodizedAluminum => MatProps { mu_s: 0.65, mu_k: 0.50, restitution: 0.40, stribeck_v: 0.05 },
+
+        // Stones / Minerals
+        Granite    => MatProps { mu_s: 0.65, mu_k: 0.55, restitution: 0.30, stribeck_v: 0.08 },
+        Limestone  => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.20, stribeck_v: 0.08 },
+        Sandstone  => MatProps { mu_s: 0.60, mu_k: 0.55, restitution: 0.20, stribeck_v: 0.10 },
+        Slate      => MatProps { mu_s: 0.65, mu_k: 0.58, restitution: 0.15, stribeck_v: 0.10 },
+        Basalt     => MatProps { mu_s: 0.80, mu_k: 0.70, restitution: 0.20, stribeck_v: 0.10 },
+        Obsidian   => MatProps { mu_s: 0.40, mu_k: 0.30, restitution: 0.60, stribeck_v: 0.04 },
+        Travertine => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.15, stribeck_v: 0.08 },
+        Quartz     => MatProps { mu_s: 0.45, mu_k: 0.35, restitution: 0.70, stribeck_v: 0.04 },
+
+        // Gemstones (polished)
+        Ruby       => MatProps { mu_s: 0.35, mu_k: 0.28, restitution: 0.80, stribeck_v: 0.04 },
+        Sapphire   => MatProps { mu_s: 0.35, mu_k: 0.28, restitution: 0.80, stribeck_v: 0.04 },
+        Emerald    => MatProps { mu_s: 0.40, mu_k: 0.32, restitution: 0.70, stribeck_v: 0.05 },
+        Topaz      => MatProps { mu_s: 0.40, mu_k: 0.32, restitution: 0.75, stribeck_v: 0.05 },
+        Amethyst   => MatProps { mu_s: 0.45, mu_k: 0.36, restitution: 0.70, stribeck_v: 0.05 },
+        Citrine    => MatProps { mu_s: 0.45, mu_k: 0.36, restitution: 0.70, stribeck_v: 0.05 },
+        Aquamarine => MatProps { mu_s: 0.40, mu_k: 0.32, restitution: 0.72, stribeck_v: 0.05 },
+        Garnet     => MatProps { mu_s: 0.45, mu_k: 0.37, restitution: 0.68, stribeck_v: 0.05 },
+        Opal       => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.40, stribeck_v: 0.05 },
+        Jade       => MatProps { mu_s: 0.45, mu_k: 0.38, restitution: 0.60, stribeck_v: 0.05 },
+        Onyx       => MatProps { mu_s: 0.40, mu_k: 0.32, restitution: 0.60, stribeck_v: 0.05 },
+        Turquoise  => MatProps { mu_s: 0.50, mu_k: 0.42, restitution: 0.55, stribeck_v: 0.05 },
+        Peridot    => MatProps { mu_s: 0.40, mu_k: 0.32, restitution: 0.65, stribeck_v: 0.05 },
+        Moonstone  => MatProps { mu_s: 0.45, mu_k: 0.35, restitution: 0.55, stribeck_v: 0.05 },
+
+        // Ceramics & Glass
+        TemperedGlass     => MatProps { mu_s: 0.40, mu_k: 0.30, restitution: 0.78, stribeck_v: 0.04 },
+        BorosilicateGlass => MatProps { mu_s: 0.38, mu_k: 0.28, restitution: 0.75, stribeck_v: 0.04 },
+        Porcelain         => MatProps { mu_s: 0.35, mu_k: 0.30, restitution: 0.60, stribeck_v: 0.05 },
+        CeramicGlazed     => MatProps { mu_s: 0.30, mu_k: 0.25, restitution: 0.55, stribeck_v: 0.05 },
+        CeramicUnglazed   => MatProps { mu_s: 0.60, mu_k: 0.55, restitution: 0.20, stribeck_v: 0.08 },
+        Earthenware       => MatProps { mu_s: 0.65, mu_k: 0.55, restitution: 0.15, stribeck_v: 0.08 },
+        Stoneware         => MatProps { mu_s: 0.60, mu_k: 0.52, restitution: 0.20, stribeck_v: 0.08 },
+        TileGlazed        => MatProps { mu_s: 0.30, mu_k: 0.25, restitution: 0.55, stribeck_v: 0.05 },
+        TileUnglazed      => MatProps { mu_s: 0.60, mu_k: 0.55, restitution: 0.20, stribeck_v: 0.08 },
+
+        // Polymers
+        PTFE          => MatProps { mu_s: 0.05, mu_k: 0.04, restitution: 0.30, stribeck_v: 0.02 },
+        UHMWPE        => MatProps { mu_s: 0.12, mu_k: 0.10, restitution: 0.35, stribeck_v: 0.03 },
+        HDPE          => MatProps { mu_s: 0.20, mu_k: 0.18, restitution: 0.30, stribeck_v: 0.04 },
+        LDPE          => MatProps { mu_s: 0.22, mu_k: 0.20, restitution: 0.30, stribeck_v: 0.04 },
+        Polypropylene => MatProps { mu_s: 0.30, mu_k: 0.25, restitution: 0.30, stribeck_v: 0.05 },
+        POM_Delrin    => MatProps { mu_s: 0.20, mu_k: 0.18, restitution: 0.50, stribeck_v: 0.04 },
+        Nylon         => MatProps { mu_s: 0.30, mu_k: 0.25, restitution: 0.40, stribeck_v: 0.05 },
+        ABS           => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.50, stribeck_v: 0.06 },
+        PVC_Rigid     => MatProps { mu_s: 0.40, mu_k: 0.34, restitution: 0.40, stribeck_v: 0.05 },
+        Polycarbonate => MatProps { mu_s: 0.38, mu_k: 0.30, restitution: 0.60, stribeck_v: 0.05 },
+        Acrylic_PMMA  => MatProps { mu_s: 0.35, mu_k: 0.30, restitution: 0.60, stribeck_v: 0.05 },
+        PEEK          => MatProps { mu_s: 0.30, mu_k: 0.25, restitution: 0.45, stribeck_v: 0.05 },
+        PET           => MatProps { mu_s: 0.32, mu_k: 0.27, restitution: 0.50, stribeck_v: 0.05 },
+        Polyurethane  => MatProps { mu_s: 0.70, mu_k: 0.60, restitution: 0.55, stribeck_v: 0.08 },
+
+        // Rubbers
+        RubberSoft     => MatProps { mu_s: 1.30, mu_k: 1.05, restitution: 0.85, stribeck_v: 0.18 },
+        RubberHard     => MatProps { mu_s: 1.00, mu_k: 0.80, restitution: 0.75, stribeck_v: 0.12 },
+        SiliconeRubber => MatProps { mu_s: 1.10, mu_k: 0.90, restitution: 0.75, stribeck_v: 0.18 },
+        NeopreneRubber => MatProps { mu_s: 1.05, mu_k: 0.90, restitution: 0.75, stribeck_v: 0.16 },
+        NitrileRubber  => MatProps { mu_s: 1.00, mu_k: 0.85, restitution: 0.70, stribeck_v: 0.16 },
+
+        // Woods
+        Oak     => MatProps { mu_s: 0.62, mu_k: 0.47, restitution: 0.08, stribeck_v: 0.10 },
+        Maple   => MatProps { mu_s: 0.60, mu_k: 0.45, restitution: 0.08, stribeck_v: 0.10 },
+        Pine    => MatProps { mu_s: 0.55, mu_k: 0.42, restitution: 0.08, stribeck_v: 0.10 },
+        Birch   => MatProps { mu_s: 0.58, mu_k: 0.44, restitution: 0.08, stribeck_v: 0.10 },
+        Bamboo  => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.06, stribeck_v: 0.10 },
+        Teak    => MatProps { mu_s: 0.55, mu_k: 0.42, restitution: 0.06, stribeck_v: 0.10 },
+        Plywood => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.06, stribeck_v: 0.10 },
+        MDF     => MatProps { mu_s: 0.45, mu_k: 0.35, restitution: 0.05, stribeck_v: 0.10 },
+
+        // Fabrics / soft
+        Cotton     => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.02, stribeck_v: 0.20 },
+        Wool       => MatProps { mu_s: 0.70, mu_k: 0.60, restitution: 0.02, stribeck_v: 0.22 },
+        Denim      => MatProps { mu_s: 0.80, mu_k: 0.70, restitution: 0.01, stribeck_v: 0.22 },
+        Silk       => MatProps { mu_s: 0.45, mu_k: 0.38, restitution: 0.01, stribeck_v: 0.18 },
+        Polyester  => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.01, stribeck_v: 0.20 },
+        Felt       => MatProps { mu_s: 0.95, mu_k: 0.85, restitution: 0.00, stribeck_v: 0.24 },
+        Canvas     => MatProps { mu_s: 1.05, mu_k: 0.90, restitution: 0.00, stribeck_v: 0.22 },
+
+        // Granular / Soils
+        SandDry    => MatProps { mu_s: 0.60, mu_k: 0.50, restitution: 0.00, stribeck_v: 0.10 },
+        SandWet    => MatProps { mu_s: 0.50, mu_k: 0.40, restitution: 0.00, stribeck_v: 0.10 },
+        ClayDry    => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.00, stribeck_v: 0.10 },
+        ClayWet    => MatProps { mu_s: 0.40, mu_k: 0.30, restitution: 0.00, stribeck_v: 0.10 },
+        SnowFresh  => MatProps { mu_s: 0.20, mu_k: 0.15, restitution: 0.00, stribeck_v: 0.08 },
+        SnowPacked => MatProps { mu_s: 0.12, mu_k: 0.08, restitution: 0.00, stribeck_v: 0.06 },
+        Gravel     => MatProps { mu_s: 0.65, mu_k: 0.55, restitution: 0.00, stribeck_v: 0.12 },
+        Mud        => MatProps { mu_s: 0.30, mu_k: 0.25, restitution: 0.00, stribeck_v: 0.12 },
+
+        // Paper / Card
+        Paper               => MatProps { mu_s: 0.50, mu_k: 0.45, restitution: 0.02, stribeck_v: 0.16 },
+        Cardboard           => MatProps { mu_s: 0.70, mu_k: 0.60, restitution: 0.01, stribeck_v: 0.18 },
+        CorrugatedCardboard => MatProps { mu_s: 0.80, mu_k: 0.70, restitution: 0.01, stribeck_v: 0.18 },
+
+        // Composites / Misc
+        CarbonFiberEpoxy => MatProps { mu_s: 0.55, mu_k: 0.50, restitution: 0.30, stribeck_v: 0.06 },
+        Fiberglass       => MatProps { mu_s: 0.60, mu_k: 0.55, restitution: 0.30, stribeck_v: 0.08 },
+        GripTape         => MatProps { mu_s: 1.50, mu_k: 1.20, restitution: 0.00, stribeck_v: 0.20 },
+        PaintedSteel     => MatProps { mu_s: 0.55, mu_k: 0.45, restitution: 0.45, stribeck_v: 0.05 },
+        EVA_Foam         => MatProps { mu_s: 1.00, mu_k: 0.90, restitution: 0.50, stribeck_v: 0.20 },
+        PU_Foam          => MatProps { mu_s: 1.10, mu_k: 1.00, restitution: 0.45, stribeck_v: 0.22 },
     }
 }
+
 
 /// Optional explicit pair overrides (deterministic and symmetric).
 /// If not present, we use the default mixing law.

@@ -3,7 +3,15 @@ name = "riftphys-vox"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+gpu-wgpu = ["wgpu", "bytemuck", "pollster"]
+
 [dependencies]
-riftphys-core = { path = "../riftphys-core" }
-bitvec = { workspace = true }
-glam = { workspace = true }
+bitvec = "1"
+glam = { version = "0.27", features = ["bytemuck"] }
+riftphys-materials = { path = "../riftphys-materials" }
+# Optional GPU bits
+wgpu = { version = "0.20", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.3", optional = true }

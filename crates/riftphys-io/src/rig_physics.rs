@@ -170,7 +170,17 @@ pub fn humanoid_from_rig(rig: &RigData) -> Result<PhysicsRig> {
     let ls_len = len(l_shank, l_foot);
     let rt_len = len(r_thigh, r_shank);
     let rs_len = len(r_shank, r_foot);
+    // >>> ADD: choose your target pelvis location in world and compute delta
+    let target_ws = Vec3::new(0.0, 1.20, 0.50);   // same place your old demo expected
+    let delta     = target_ws - pelvis_pos;
+    let p_adj = |i: usize| -> Vec3 { p(i) + delta };
 
+    // (optional but nice for hash stability)
+    #[inline] fn q6(x: f32) -> f32 { (x * 1e6).round() * 1e-6 }
+    fn pack_iso_q(p: Vec3, q: Quat) -> [f32;7] {
+        let qn = q.normalize();
+        [q6(p.x), q6(p.y), q6(p.z), q6(qn.x), q6(qn.y), q6(qn.z), q6(qn.w)]
+    }
     let links = vec![
         LinkDef { name: "pelvis".into(), mass: 12.0,
             shape: ColliderShape::Capsule { r: 0.15, hh: 0.35 }, pose_ws: pack_iso(pelvis_pos, Quat::IDENTITY) },

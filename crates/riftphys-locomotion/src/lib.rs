@@ -49,7 +49,7 @@ pub fn swing_target(p_stance: Vec3, step_len: f32, lift: f32, s: f32) -> Vec3 {
         hermite(mid, Vec3::ZERO, p1, Vec3::ZERO, ss)
     }
 }
-
+#[derive(Clone)]
 pub struct LocoState {
     pub pelvis: u32, pub left: u32, pub right: u32, // body indices
     pub left_clk:  FootClock,

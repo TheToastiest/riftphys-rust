@@ -6,47 +6,15 @@
         use std::ffi::c_void;                                 // for callback user ptr
         use std::sync::atomic::{AtomicBool, Ordering};
         use glam::{Quat};
-        use riftphys_io::{ RigData, rig_physics::PhysicsRig };
-        use riftphys_io::{rig_physics::humanoid_from_rig};
-        use riftphys_io::{rig_physics::load_into_world};
+        use riftphys_io::{ RigData };
+        use riftphys_io::rig_physics::{PhysicsRig, humanoid_from_rig, load_into_world, RigMap}; // ensure RigMap is `pub use`d from riftphys_io::lib.rs
+
         use std::fs;
         use anyhow::*;
         use std::result::Result::Ok;
         mod epoch_swap;
         mod bench_perf;
         mod epoch_shadow;
-        // If the real EpochShadow is compiled (feature on), use it:
-        #[cfg(feature = "shadow_epoch")]
-        use epoch_shadow::{EpochShadow, Eps};
-
-        // If feature is OFF, provide a local shim with the SAME surface.
-        #[cfg(not(feature = "shadow_epoch"))]
-        #[allow(dead_code)]
-        pub struct Eps { pub pos: f32, pub vel: f32, pub quat_deg: f32, pub contacts: u32 }
-
-        #[cfg(not(feature = "shadow_epoch"))]
-        pub struct EpochShadow {
-            pub active: riftphys_world::World,
-            pub shadow: riftphys_world::World, // kept so existing code compiles unchanged
-        }
-
-        #[cfg(not(feature = "shadow_epoch"))]
-        impl EpochShadow {
-            pub fn new(active: riftphys_world::World,
-                       shadow: riftphys_world::World,
-                       _epoch_start: u32,
-                       _promote_after: u32) -> Self {
-                Self { active, shadow }
-            }
-            #[inline] pub fn step(&mut self, dt: f32) {
-                let _ = self.active.step(dt);
-                // shadow world intentionally not advanced in Earth-only mode
-            }
-            #[inline] pub fn step_eps(&mut self, dt: f32, _eps: Eps) -> bool {
-                let _ = self.active.step(dt);
-                false // “no promotion expected” semantics preserved
-            }
-        }
 
         use std::cell::RefCell;
         use std::sync::Arc;
@@ -65,9 +33,103 @@
         use riftphys_acceleration::{SimplePropulsion, ThrottleCurve};
         use riftphys_vehicles::{VehicleParams, WheelParams, AxleInput, VehicleInstance};
         use riftphys_terrain::HeightField;
-
+        use riftphys_materials::MaterialId;
         use riftphys_controllers::BalanceParams;
         use riftphys_gravity::{GravitySpec, PointMass, point_mass};
+
+        // If the real EpochShadow is compiled (feature on), use it:
+        #[cfg(feature = "shadow_epoch")]
+        use epoch_shadow::{EpochShadow, Eps};
+
+        // If feature is OFF, provide a local shim with the SAME surface.
+        #[cfg(not(feature = "shadow_epoch"))]
+        #[allow(dead_code)]
+        pub struct Eps { pub pos: f32, pub vel: f32, pub quat_deg: f32, pub contacts: u32 }
+
+        #[cfg(not(feature = "shadow_epoch"))]
+        pub struct EpochShadow {
+            pub active: riftphys_world::World,
+            pub shadow: riftphys_world::World, // kept so existing code compiles unchanged
+        }
+        #[derive(Clone)]
+        struct Walker {
+            pelvis:    BodyId,
+            left:      BodyId,
+            right:     BodyId,
+            state:     LocoState,
+            left_clk:  loco::FootClock,
+            right_clk: loco::FootClock,
+            turn_t:    f32,
+            turn_T:    f32,   // seconds between heading changes
+            turn_dir:  f32,   // +1 or -1, flips each time
+        }
+
+        fn translate_rig(world: &mut World, bodies: &[BodyId], delta: riftphys_core::Vec3) {
+            for &b in bodies {
+                let mut p = world.get_body_pose(b);
+                p.pos += delta;
+                world.set_body_pose(b, p);
+            }
+        }
+
+        fn spawn_walker(
+            world: &mut World,
+            phys: &PhysicsRig,
+            origin_ws: riftphys_core::Vec3,
+            heading_rad: f32,
+            gait: &loco::GaitSpec,
+            turn_period_s: f32,
+            phase01: f32,
+        ) -> anyhow::Result<(Walker, Vec<BodyId>)> {
+            let map: RigMap = load_into_world(world, phys)?;
+            // gather all link bodies so we can translate the whole rig
+            let mut all_bodies = Vec::with_capacity(map.body.len());
+            for (_, id) in map.body.iter() { all_bodies.push(*id); }
+
+            let pelvis = *map.body.get("pelvis").ok_or_else(|| anyhow!("rig missing pelvis"))?;
+            let left   = *map.body.get("l_foot").ok_or_else(|| anyhow!("rig missing l_foot"))?;
+            let right  = *map.body.get("r_foot").ok_or_else(|| anyhow!("rig missing r_foot"))?;
+
+            // recenter to desired origin (use pelvis as handle)
+            let p0 = world.get_body_pose(pelvis).pos;
+            // translate_rent pallotry to ensure in view
+            let delta = riftphys_core::vec3(origin_ws.x - p0.x, origin_ws.y - p0.y, origin_ws.z - p0.z);
+            translate_rig(world, &all_bodies, delta);
+
+            let mut st = LocoState::new(pelvis.0, left.0, right.0, *gait);
+            st.heading_yaw_rad = heading_rad;
+            st.left_clk.t  = phase01 * gait.stance_dur;
+            st.right_clk.t = st.left_clk.t + gait.stance_dur; // start out of phase
+
+            let w = Walker {
+                pelvis, left, right,
+                left_clk: st.left_clk,
+                right_clk: st.right_clk,
+                state: st,
+                turn_t: 0.0,
+                turn_T: turn_period_s,
+                turn_dir: if (origin_ws.x as i32 & 1) == 0 { 1.0 } else { -1.0 },
+            };
+
+            Ok((w, all_bodies))
+        }
+        #[cfg(not(feature = "shadow_epoch"))]
+        impl EpochShadow {
+            pub fn new(active: riftphys_world::World,
+                       shadow: riftphys_world::World,
+                       _epoch_start: u32,
+                       _promote_after: u32) -> Self {
+                Self { active, shadow }
+            }
+            #[inline] pub fn step(&mut self, dt: f32) {
+                let _ = self.active.step(dt);
+                // shadow world intentionally not advanced in Earth-only mode
+            }
+            #[inline] pub fn step_eps(&mut self, dt: f32, _eps: Eps) -> bool {
+                let _ = self.active.step(dt);
+                false // “no promotion expected” semantics preserved
+            }
+        }
 
         // Rough μ (G*M) and centers in your existing “planet-below-origin” convention.
         // Feel free to tweak magnitudes if you want gentler forces.

@@ -4,12 +4,16 @@ mod riftnet_client;
 use parking_lot::Mutex;
 //
 // Controls:
-//   Mouse Right-Button + move  -> look around (360° yaw, ±89° pitch)
-//   W/A/S/D                    -> move forward/left/back/right
-//   Q / E                      -> move down / up
-//   R                          -> reset camera
-//   Space                      -> pause/unpause physics
-//   Esc                        -> exit
+//   RMB + move             -> look around (360° yaw, ±89° pitch)
+//   W/A/S/D                -> move forward/left/back/right
+//   Q / E                  -> move down / up
+//   [  /  ]                -> camera speed step (1×..50×), like a slider
+//   1/2/3/4/5              -> quick speed presets (1× / 2× / 5× / 20× / 50×)
+//   Shift                  -> temporary 1.5× speed boost
+//   F1                     -> toggle HUD (XYZ, speed) in title
+//   R                      -> reset camera
+//   Space                  -> pause/unpause physics
+//   Esc                    -> exit
 use std::sync::Arc;
 use std::{collections::HashSet, time::Instant};
 use glam::{Vec3, Quat};
@@ -199,10 +203,16 @@ struct App {
     rmb_down: bool,
     last_cursor: Option<PhysicalPosition<f64>>,
     move_speed: f32,
+    base_speed: f32,      // meters per second at 1.0x
+    speed_step: usize,    // index into SPEED_STEPS
+    show_hud: bool,
+
     sphere_id: BodyId,
     net: Option<riftnet_client::NetViewer>,
     net_ents: Arc<Mutex<Vec<riftphys_riftnet::wire::NetEnt>>>,
+
 }
+const SPEED_STEPS: [f32; 10] = [1.0, 1.5, 2.0, 3.0, 5.0, 8.0, 12.0, 20.0, 35.0, 50.0];
 
 impl App {
     fn new() -> Self {
@@ -227,7 +237,60 @@ impl App {
             sphere_id,
             net: None,
             net_ents: Arc::new(Mutex::new(Vec::new())),
+            base_speed: 5.0,    // 5 m/s at 1x feels good; tweak if you like
+            speed_step: 0,      // 1.0x
+            show_hud: true,     // show XYZ + speed in window title
         }
+    }
+    fn expand_capsules(mut v: Vec<Instance>) -> Vec<Instance> {
+        use riftphys_render::{Instance, ShapeKind, trs};
+        let mut out = Vec::with_capacity(v.len() * 3);
+        out.clear();
+
+        for inst in v.drain(..) {
+            match inst.kind {
+                ShapeKind::CapsuleY { r, hh } => {
+                    // Extract p, q, scale from model (trs produced a pure TRS)
+                    let m = inst.model;
+                    let p = glam::Vec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z);
+                    // local Y axis in world (ignoring scale)
+                    let up_ws = glam::Vec3::new(m.y_axis.x, m.y_axis.y, m.y_axis.z).normalize_or_zero();
+                    let q = {
+                        // Pull rotation from columns; trs made a pure rotation*scale
+                        let x = glam::Vec3::new(m.x_axis.x, m.x_axis.y, m.x_axis.z).normalize_or_zero();
+                        let y = up_ws;
+                        let z = x.cross(y).normalize_or_zero();
+                        let rot = glam::Mat3::from_cols(x, y, z);
+                        glam::Quat::from_mat3(&rot)
+                    };
+
+                    // (1) cylinder as a box of half-extents (r, hh, r)
+                    out.push(Instance {
+                        model: trs(p, q, glam::Vec3::new(r, hh, r)),
+                        color: inst.color,
+                        kind: ShapeKind::Box { hx: r, hy: hh, hz: r },
+                    });
+
+                    // (2) top sphere at +hh along local Y
+                    let p_top = p + up_ws * hh;
+                    out.push(Instance {
+                        model: trs(p_top, q, glam::Vec3::splat(r)),
+                        color: inst.color,
+                        kind: ShapeKind::Sphere { r },
+                    });
+
+                    // (3) bottom sphere at -hh along local Y
+                    let p_bot = p - up_ws * hh;
+                    out.push(Instance {
+                        model: trs(p_bot, q, glam::Vec3::splat(r)),
+                        color: inst.color,
+                        kind: ShapeKind::Sphere { r },
+                    });
+                }
+                _ => out.push(inst),
+            }
+        }
+        out
     }
 
     fn on_resize(&mut self, size: PhysicalSize<u32>) {
@@ -253,6 +316,36 @@ impl App {
                         }
                         _ => {}
                     }
+                    match code {
+                        KeyCode::Escape => { el.exit(); return; }
+                        KeyCode::Space  => { self.paused = !self.paused; }
+                        KeyCode::KeyR   => {
+                            if let Some(r) = self.renderer.as_mut() {
+                                r.camera.eye   = Vec3::new(-6.0, 4.0, 6.0);
+                                r.camera.yaw   = 45_f32.to_radians();
+                                r.camera.pitch = (-15_f32).to_radians();
+                            }
+                        }
+                        // --- NEW: speed “slider” like PVD ---
+                        KeyCode::BracketLeft => {                 // step down
+                            if self.speed_step > 0 { self.speed_step -= 1; }
+                        }
+                        KeyCode::BracketRight => {                // step up
+                            if self.speed_step + 1 < SPEED_STEPS.len() { self.speed_step += 1; }
+                        }
+                        // quick presets
+                        KeyCode::Digit1 => { self.speed_step = 0; } // 1.0x
+                        KeyCode::Digit2 => { self.speed_step = 2; } // 2.0x
+                        KeyCode::Digit3 => { self.speed_step = 4; } // 5.0x
+                        KeyCode::Digit4 => { self.speed_step = 7; } // 20x
+                        KeyCode::Digit5 => { self.speed_step = 9; } // 50x
+
+                        // HUD toggle (XYZ + speed in title)
+                        KeyCode::F1 => { self.show_hud = !self.show_hud; }
+
+                        _ => {}
+                    }
+
                     self.pressed.insert(code);
                 }
                 ElementState::Released => {
@@ -278,6 +371,8 @@ impl App {
 
     fn update_camera(&mut self, dt: f32) {
         let mut dir = Vec3::ZERO;
+        let shift_down = self.pressed.contains(&KeyCode::ShiftLeft) || self.pressed.contains(&KeyCode::ShiftRight);
+
         if let Some(r) = self.renderer.as_ref() {
             if self.pressed.contains(&KeyCode::KeyW) { dir += r.camera.forward(); }
             if self.pressed.contains(&KeyCode::KeyS) { dir -= r.camera.forward(); }
@@ -286,12 +381,30 @@ impl App {
             if self.pressed.contains(&KeyCode::KeyE) { dir += Vec3::Y; }
             if self.pressed.contains(&KeyCode::KeyQ) { dir -= Vec3::Y; }
         }
+
         if let Some(r) = self.renderer.as_mut() {
             if dir.length_squared() > 1e-6 {
-                r.camera.eye += dir.normalize() * self.move_speed * dt;
+                let step_scale = SPEED_STEPS[self.speed_step];
+                let boost = if shift_down { 1.5 } else { 1.0 };
+                let speed = self.base_speed * step_scale * boost;
+                r.camera.eye += dir.normalize() * speed * dt;
+            }
+
+            // HUD: camera XYZ + speed in window title (cheap & always visible)
+            if self.show_hud {
+                if let Some(w) = self.window.as_ref() {
+                    let p = r.camera.eye;
+                    let step_scale = SPEED_STEPS[self.speed_step];
+                    let boost = if shift_down { " (SHIFT ×1.5)" } else { "" };
+                    w.set_title(&format!(
+                        "riftphys-vis-tool  |  Cam: X={:+.2} Y={:+.2} Z={:+.2}  |  Speed: {:.1}x{}",
+                        p.x, p.y, p.z, step_scale, boost
+                    ));
+                }
             }
         }
     }
+
 
     fn step_world(&mut self, dt_real: f32) {
         self.acc += dt_real.min(0.25);
@@ -324,7 +437,7 @@ impl App {
                 }
             }
         }
-    
+
         // try net instances first
         let mut net_instances = Vec::new();
         {
@@ -355,15 +468,22 @@ impl App {
             }
         }
 
-
         let instances =
             if !net_instances.is_empty() {
-                net_instances
+                Self::expand_capsules(net_instances)
             } else {
-                // fall back to local world (your existing path)
                 let w = match self.world.as_ref() { Some(w) => w, None => return };
-                build_instances(w, &self.drawlist)
+                Self::expand_capsules(build_instances(w, &self.drawlist))
             };
+        //
+        // let instances =
+        //     if !net_instances.is_empty() {
+        //         net_instances
+        //     } else {
+        //         // fall back to local world (your existing path)
+        //         let w = match self.world.as_ref() { Some(w) => w, None => return };
+        //         build_instances(w, &self.drawlist)
+        //     };
 
         match r.render(&instances) {
             Ok(()) => {}
@@ -455,7 +575,7 @@ impl ApplicationHandler for App {
 
     }
 }
-
+    
 fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let mut app = App::new();

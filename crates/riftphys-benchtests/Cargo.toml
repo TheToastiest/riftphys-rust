@@ -11,9 +11,15 @@ path = "src/epoch_swap.rs"
 name = "bench_perf"
 path = "src/bench_perf.rs"
 
+[[bin]]
+
+name = "voxel_bench_world"
+path = "src/voxel_bench_world.rs"
+
 [features]
 default = []         # Earth-only
 shadow_epoch = []    # Enable Mars/Earth lockstep shadow run
+gpu-wgpu = []
 
 [dependencies]
 ctrlc = "3"
@@ -31,7 +37,13 @@ riftphys-controllers = { path = "../riftphys-controllers" }
 riftphys-locomotion = { path = "../riftphys-locomotion" }
 riftphys-bridge-uriel = { path = "../riftphys-bridge-uriel" }
 riftphys-riftnet = { path = "../riftphys-riftnet" }
-riftphys-io = { path = "../riftphys-io" }
+riftphys-io = { path = "../riftphys-io"}
+riftphys-materials = { path = "../riftphys-materials"}
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+statrs = "0.16" # optional, we’ll compute p99 ourselves
+riftphys-vox = { path = "../riftphys-vox", features = ["default", "gpu-wgpu"] } # or no features if you only want CPU
+
 glam = { workspace = true }
 serde_json = "1.0.145"
 anyhow = "1.0.100"
