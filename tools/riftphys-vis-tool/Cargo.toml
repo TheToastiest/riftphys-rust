@@ -20,6 +20,7 @@ riftphys-acceleration = { path = "../../crates/riftphys-acceleration" }
 riftphys-controllers = { path = "../../crates/riftphys-controllers" }
 riftphys-viz = { path = "../../crates/riftphys-viz" }
 riftphys-riftnet = { path = "../../crates/riftphys-riftnet" }
+riftphys-materials = { path = "../../crates/riftphys-materials" }
 # Windowing (same as workspace: =0.30.12)
 winit = { version = "0.30.12" }
 wgpu = "0.20"

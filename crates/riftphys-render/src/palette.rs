@@ -1,41 +1,43 @@
 use wgpu::util::DeviceExt;
-use riftphys_materials::{self as mats};
+use riftphys_materials as mats;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct GpuMatVis { pub base: [f32;3], pub rough: f32, pub metal: f32, pub _pad: [f32;2] }
-unsafe impl bytemuck::Zeroable for GpuMatVis {}
-unsafe impl bytemuck::Pod for GpuMatVis {}
+pub struct GpuMatVisU {
+    pub base_rough: [f32; 4],  // rgb, rough
+    pub metal_pad:  [f32; 4],  // x = metal
+}
+unsafe impl bytemuck::Zeroable for GpuMatVisU {}
+unsafe impl bytemuck::Pod      for GpuMatVisU {}
 
 pub struct MatPalette {
-    pub buf: wgpu::Buffer,
+    pub buf:    wgpu::Buffer,
     pub layout: wgpu::BindGroupLayout,
-    pub bind: wgpu::BindGroup,
+    pub bind:   wgpu::BindGroup,
 }
 
 pub fn build_palette(device:&wgpu::Device) -> MatPalette {
-    // Fill table
-    let mut table = [GpuMatVis { base:[0.5,0.5,0.5], rough:0.9, metal:0.0, _pad:[0.0;2] }; 256];
+    let mut table = [GpuMatVisU { base_rough:[0.5,0.5,0.5,0.9], metal_pad:[0.0,0.0,0.0,0.0] }; 256];
     for i in 0..256 {
-        // safe because MaterialId is #[repr(u8)]
         let id = unsafe { std::mem::transmute::<u8, mats::MaterialId>(i as u8) };
-        let v = mats::vis::mat_vis(id);
-        table[i] = GpuMatVis { base: v.base_rgb, rough: v.rough, metal: v.metal, _pad:[0.0;2] };
+        let v  = mats::vis::mat_vis(id);
+        table[i] = GpuMatVisU { base_rough:[v.base_rgb[0], v.base_rgb[1], v.base_rgb[2], v.rough],
+            metal_pad:[v.metal, 0.0, 0.0, 0.0] };
     }
 
     let buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("mat-palette"),
+        label: Some("mat-palette-ub"),
         contents: bytemuck::cast_slice(&table),
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
     });
 
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("mat-palette-bgl"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
                 min_binding_size: None,
             },
@@ -43,7 +45,7 @@ pub fn build_palette(device:&wgpu::Device) -> MatPalette {
         }],
     });
 
-    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor{
+    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("mat-palette-bg"),
         layout: &layout,
         entries: &[wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() }],

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 // Voxels
 use riftphys_vox::{Ray, RayHit, VoxelChunk};
-#[cfg(feature = "gpu-wgpu")]
+
 use riftphys_vox::gpu_wgpu::{GpuRaycaster, HitGpu};
 
 // World + models
@@ -429,8 +429,12 @@ fn main() {
     } = build_world(&args);
 
     // ---- GPU raycaster (optional)
-    #[cfg(feature = "gpu-wgpu")]
-    let gpu_rc = if args.gpu { Some(GpuRaycaster::new()) } else { None };
+    let gpu_rc = if args.gpu {
+        println!("[GPU] Initializing GpuRaycaster…");
+        Some(riftphys_vox::gpu_wgpu::GpuRaycaster::new())
+    } else {
+        None
+    };
 
     // ---- Intro print
     println!("== Voxel World Bench ==");
@@ -537,7 +541,6 @@ fn main() {
         cpu_secs += dt_cpu;
 
         // === RAYCAST (GPU)
-        #[cfg(feature = "gpu-wgpu")]
         let (per_us_gpu, gpu_hits_opt) = if let (true, Some(g)) = (args.gpu, &gpu_rc) {
             let (ms, gpu_hits) = g.raycast_batch(&chunk, &rays);
             let per = (ms * 1e3) / args.batch as f64; // ms -> µs
@@ -549,8 +552,8 @@ fn main() {
             (0.0, None)
         };
 
+
         // === GPU vs CPU error checks
-        #[cfg(feature = "gpu-wgpu")]
         if args.gpu {
             if let Some(gpu_hits) = gpu_hits_opt {
                 for i in 0..args.batch {
@@ -612,50 +615,32 @@ fn main() {
 
         let stats = world.step(dt);
 
-        // === PRINT cadence
+            // === PRINT cadence
         if args.print_every != 0 && (tick as u32) % args.print_every == 0 {
             let p = world.get_body_pose(capsule_id).pos;
             let v = world.get_body_vel(capsule_id).lin;
+
+            // CPU throughput for this tick window
             let mrays_cpu = if dt_cpu > 0.0 {
                 (args.batch as f64 / dt_cpu) / 1.0e6
+            } else { 0.0 };
+
+            // Build the optional GPU tail string once
+            let gpu_tail = if args.gpu {
+                let mrays_gpu = if per_us_gpu > 0.0 { 1.0 / per_us_gpu } else { 0.0 };
+                format!("  GPU {:6.3}µs/r ({:6.2} MRays/s)", per_us_gpu, mrays_gpu)
             } else {
-                0.0
+                String::new()
             };
-            #[cfg(feature = "gpu-wgpu")]
-            let mrays_gpu = if per_us_gpu > 0.0 {
-                (args.batch as f64 / (per_us_gpu / 1e6)) / 1.0e6
-            } else {
-                0.0
-            };
+
+
             println!(
-                "[tick {:5}] capsule: y={:+.3} vy={:+.3} NF={:6.1} grounded={} contacts={:3} | rays: CPU {:6.3}µs/r ({:6.2} MRays/s){}",
-                tick,
-                p.y,
-                v.y,
-                nf,
-                gs.grounded,
-                stats.contacts,
-                per_us_cpu,
-                mrays_cpu,
-                {
-                    #[cfg(feature = "gpu-wgpu")]
-                    {
-                        if args.gpu {
-                            format!(
-                                "  GPU {:6.3}µs/r ({:6.2} MRays/s)",
-                                per_us_gpu, mrays_gpu
-                            )
-                        } else {
-                            String::new()
-                        }
-                    }
-                    #[cfg(not(feature = "gpu-wgpu"))]
-                    {
-                        String::new()
-                    }
-                }
+                "[tick {:5}] capsule: y={:+.3} vy={:+.3} NF={:6.1} grounded={} contacts={:3} \
+         | rays: CPU {:6.3}µs/r ({:6.2} MRays/s){}",
+                tick, p.y, v.y, nf, gs.grounded, stats.contacts, per_us_cpu, mrays_cpu, gpu_tail
             );
         }
+
 
         // === RiftNet snapshot (optional, only if --viz)
         if let Some(server) = server_opt {
@@ -739,7 +724,6 @@ fn main() {
         println!("CPU throughput: {:.2} MRays/s", cpu_mrays_s);
     }
 
-    #[cfg(feature = "gpu-wgpu")]
     if args.gpu && !gpu_lat_us.is_empty() {
         println!(
             "GPU per-ray µs: p50={:.3}  p95={:.3}  p99={:.3}",

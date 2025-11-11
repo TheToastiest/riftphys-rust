@@ -516,18 +516,29 @@ impl ApplicationHandler for App {
         let attrs = WindowAttributes::default()
             .with_title("riftphys-vis-tool (3D)")
             .with_inner_size(LogicalSize::new(1280.0, 800.0));
-        self.net = riftnet_client::NetViewer::connect("127.0.0.1", 49111, self.net_ents.clone());
 
         let window = Arc::new(el.create_window(attrs).expect("window"));
-        let size = window.inner_size();
         el.listen_device_events(DeviceEvents::Always);
-        // Arc clone here:
-        let mut renderer = pollster::block_on(Renderer::new(window.clone()));
-        renderer.resize(size.width.max(1), size.height.max(1));
 
+        // renderer first
+        let mut renderer = pollster::block_on(Renderer::new(window.clone()));
+        let size = window.inner_size();
+        renderer.resize(size.width.max(1), size.height.max(1));
         renderer.camera.eye   = Vec3::new(-6.0, 4.0, 6.0);
         renderer.camera.yaw   = 45_f32.to_radians();
         renderer.camera.pitch = (-15_f32).to_radians();
+
+        // OPTIONAL net connect (only if env is set)
+        if std::env::var("RIFT_VIEW_NET").ok().as_deref() == Some("1") {
+            if let Some(nc) = riftnet_client::NetViewer::connect("127.0.0.1", 49111, self.net_ents.clone()) {
+                self.net = Some(nc);
+                eprintln!("RiftNet: connected to 127.0.0.1:49111");
+            } else {
+                eprintln!("RiftNet: connect failed (no DLL or server). Running offline.");
+            }
+        } else {
+            eprintln!("RiftNet: disabled (set RIFT_VIEW_NET=1 to enable).");
+        }
 
         self.renderer = Some(renderer);
         self.window   = Some(window);
@@ -535,6 +546,7 @@ impl ApplicationHandler for App {
 
         if let Some(w) = self.window.as_ref() { w.request_redraw(); }
     }
+
 
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -575,7 +587,7 @@ impl ApplicationHandler for App {
 
     }
 }
-    
+
 fn main() -> anyhow::Result<()> {
     let event_loop = EventLoop::new()?;
     let mut app = App::new();

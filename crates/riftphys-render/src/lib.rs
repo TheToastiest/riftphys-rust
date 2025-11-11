@@ -8,12 +8,13 @@ pub mod palette;
 
 use std::sync::Arc;
 use winit::window::Window;
+use riftphys_materials as mats;
 
 use std::f32::consts::PI;
 use glam::{Mat4, Vec3, Quat};
 use wgpu::util::DeviceExt;
     // use std::num::NonZeroU32;
-use riftphys_materials;
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
@@ -148,7 +149,6 @@ pub struct Renderer {
     unit_capsule_y: Mesh,
     grid_lines: Mesh,
     pub camera: Camera,
-    mat_pal: crate::palette::MatPalette,
 
 }
 
@@ -226,13 +226,12 @@ impl Renderer {
             label: Some("line.wgsl"),
             source: wgpu::ShaderSource::Wgsl(LINE_WGSL.into())
         });
-        let mat_pal = crate::palette::build_palette(&device);
 
         // pipelines
         let mesh_pipe = {
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor{
                 label: Some("mesh_pl"),
-                bind_group_layouts: &[&cam_bgl, &mat_pal.layout],
+                bind_group_layouts: &[&cam_bgl],
                 push_constant_ranges: &[],
             });
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor{
@@ -321,7 +320,6 @@ impl Renderer {
             cam_buf, cam_bind, cam_bgl,
             unit_box, unit_sphere, unit_capsule_y, grid_lines,
             camera: Camera::new(),
-            mat_pal,
         }
     }
 
@@ -407,18 +405,16 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            // GRID (line pipeline): bind cam only
+            // grid
             rpass.set_pipeline(&self.line_pipe);
-            rpass.set_bind_group(0, &self.cam_bind, &[]);          // group 0 = cam
-            // DO NOT bind group 1 here (line pipeline doesn't use it)
+            rpass.set_bind_group(0, &self.cam_bind, &[]);
             rpass.set_vertex_buffer(0, self.grid_lines.vbuf.slice(..));
             rpass.set_index_buffer(self.grid_lines.ibuf.slice(..), wgpu::IndexFormat::Uint32);
             rpass.draw_indexed(0..self.grid_lines.icount, 0, 0..1);
 
-            // MESHES (mesh pipeline): bind cam + palette
+            // meshes
             rpass.set_pipeline(&self.mesh_pipe);
-            rpass.set_bind_group(0, &self.cam_bind, &[]);          // group 0 = cam
-            rpass.set_bind_group(1, &self.mat_pal.bind, &[]);      // group 1 = palette
+            rpass.set_bind_group(0, &self.cam_bind, &[]);
 
             // boxes
             if let Some(buf) = &boxes_buf {
@@ -427,6 +423,7 @@ impl Renderer {
                 rpass.set_index_buffer(self.unit_box.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 rpass.draw_indexed(0..self.unit_box.icount, 0, 0..(boxes.len() as u32));
             }
+
             // spheres
             if let Some(buf) = &spheres_buf {
                 rpass.set_vertex_buffer(0, self.unit_sphere.vbuf.slice(..));
@@ -647,16 +644,6 @@ struct Camera {
 };
 @group(0) @binding(0) var<uniform> uCam : Camera;
 
-// ---- material palette (group 1) ----
-struct MatVis {
-  base: vec3<f32>,
-  rough: f32,
-  metal: f32,
-  _pad: vec2<f32>,
-};
-@group(1) @binding(0)
-var<storage, read> MAT: array<MatVis>;
-
 struct VsIn {
   @location(0) pos : vec3<f32>,
   @location(1) nrm : vec3<f32>,
@@ -673,18 +660,26 @@ struct VsOut {
   @location(1) p_ws : vec3<f32>,
   @location(2) color : vec3<f32>,
 };
-
 @vertex
 fn vs_main(v: VsIn) -> VsOut {
   let M = mat4x4<f32>(v.i_m0, v.i_m1, v.i_m2, v.i_m3);
   let p_ws = (M * vec4<f32>(v.pos, 1.0)).xyz;
+  // upper-left 3x3 for normal (assumes uniform scale)
+  let m0 = M[0].xyz;
+let m1 = M[1].xyz;
+let m2 = M[2].xyz;
 
-  // normal matrix for non-uniform scale: R * inv(S)
-  let m0 = M[0].xyz; let m1 = M[1].xyz; let m2 = M[2].xyz;
-  let sx = length(m0); let sy = length(m1); let sz = length(m2);
-  let r0 = m0 / sx;   let r1 = m1 / sy;   let r2 = m2 / sz;
-  let n_ws = normalize(mat3x3<f32>(r0 * (1.0/sx), r1 * (1.0/sy), r2 * (1.0/sz)) * v.nrm);
+let sx = length(m0);
+let sy = length(m1);
+let sz = length(m2);
 
+// rotation columns (orthonormal)
+let r0 = m0 / sx;
+let r1 = m1 / sy;
+let r2 = m2 / sz;
+
+// normal matrix = R * inv(S)
+let n_ws = normalize(mat3x3<f32>(r0 * (1.0 / sx), r1 * (1.0 / sy), r2 * (1.0 / sz)) * v.nrm);
   var o: VsOut;
   o.pos_cs = uCam.view_proj * vec4<f32>(p_ws, 1.0);
   o.n_ws = n_ws;
@@ -699,36 +694,13 @@ fn fs_main(i: VsOut) -> @location(0) vec4<f32> {
   let N = normalize(i.n_ws);
   let V = normalize(uCam.eye_ws.xyz - i.p_ws);
   let H = normalize(L + V);
-
-  // choose axis of the face (+/-X, +/-Y, +/-Z)
-  let aN = abs(N);
-  var axis: u32 = 0u;
-  if (aN.y >= aN.x && aN.y >= aN.z) { axis = 1u; }
-  else if (aN.z >= aN.x && aN.z >= aN.y) { axis = 2u; }
-
-  let signp = select(-1.0, 1.0,
-      dot(N, vec3<f32>(f32(axis==0u), f32(axis==1u), f32(axis==2u))) >= 0.0);
-
-  // palette choices: 0=Default, 1=Ice, 3=Steel, 5=Wood, 6=Concrete, 7=Asphalt
-  var mat_id: u32 = 0u;
-  if (axis == 0u) { mat_id = select(7u, 3u, signp > 0.0); }  // X: Asphalt / Steel
-  if (axis == 1u) { mat_id = select(6u, 5u, signp > 0.0); }  // Y: Concrete / Wood
-  if (axis == 2u) { mat_id = select(1u, 0u, signp > 0.0); }  // Z: Ice / Default
-
-  let mv = MAT[mat_id];
-
-  let ndotl = max(dot(N, L), 0.0);
-  let diff = 0.08 + 0.92 * ndotl;
-  let spec = pow(max(dot(N, H), 0.0), mix(16.0, 64.0, 1.0 - mv.rough))
-           * 0.25 * (0.04 + mv.metal * 0.6);
-
-  // gentle lean toward the material base to keep it readable
-  let base = mv.base;
-  let c = base * diff + vec3<f32>(spec);
-  return vec4<f32>(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0);
+  let ndotl = max(dot(N,L), 0.0);
+  let diff = ndotl;
+  let spec = pow(max(dot(N,H), 0.0), 32.0);
+  let c = i.color * (0.08 + 0.92 * diff) + vec3<f32>(spec);
+  return vec4<f32>(c, 1.0);
 }
 "#;
-
 
 const LINE_WGSL: &str = r#"
 struct Camera {

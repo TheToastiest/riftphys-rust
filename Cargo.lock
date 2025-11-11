@@ -1859,6 +1859,7 @@ name = "riftphys-benchtests"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "clap",
  "ctrlc",
  "glam",
@@ -1882,6 +1883,7 @@ dependencies = [
  "riftphys-world",
  "serde_json",
  "statrs",
+ "wgpu",
 ]
 
 [[package]]
@@ -2037,6 +2039,7 @@ dependencies = [
  "riftphys-core",
  "riftphys-geom",
  "riftphys-gravity",
+ "riftphys-materials",
  "riftphys-render",
  "riftphys-riftnet",
  "riftphys-viz",

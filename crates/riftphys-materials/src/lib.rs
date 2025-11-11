@@ -306,7 +306,89 @@ fn ordered_pair(a: MaterialId, b: MaterialId) -> (MaterialId, MaterialId) {
         Ordering::Greater                 => (b,a),
     }
 }
+/// Physics-oriented properties used by damage, fracture, buoyancy/fluids.
+/// Units in SI.
+#[derive(Copy, Clone, Debug)]
+pub struct PhysProps {
+    pub density: f32,                 // kg/m^3 (mass/inertia)
+    pub tensile_mpa: f32,             // MPa
+    pub compressive_mpa: f32,         // MPa
+    pub shear_mpa: f32,               // MPa
+    pub fracture_energy_j_per_m2: f32,// Griffith-type energy release rate
+    pub porosity: f32,                // 0..1
+    pub permeability_m2: f32,         // m^2 (Darcy)
+}
+/// Energy to remove 1 m^3 of this material as "digging" (J/m^3).
+/// Lets you gate voxel edits with one number instead of full stress analysis.
+/// Heuristic: base on compressive strength with a safety factor.
+/// 1 MPa ≈ 1e6 N/m^2; treat removal cost as k * sigma_c [J/m^3]
 
+#[inline] pub fn contact_props(id: MaterialId) -> MatProps { props(id) }
+
+#[inline] pub fn phys_props(id: MaterialId) -> PhysProps {
+    use MaterialId::*;
+    match id {
+        // numbers are placeholders; tune over time
+        Granite => PhysProps { density: 2700.0, tensile_mpa: 7.0, compressive_mpa: 130.0,
+            shear_mpa: 20.0, fracture_energy_j_per_m2: 220.0,
+            porosity: 0.01, permeability_m2: 1.0e-16 },
+        Steel   => PhysProps { density: 7850.0, tensile_mpa: 400.0, compressive_mpa: 250.0,
+            shear_mpa: 150.0, fracture_energy_j_per_m2: 800.0,
+            porosity: 0.0,  permeability_m2: 0.0 },
+        Diamond => PhysProps { density: 3500.0, tensile_mpa: 2800.0, compressive_mpa: 8800.0,
+            shear_mpa: 5000.0, fracture_energy_j_per_m2: 5_000.0,
+            porosity: 0.0, permeability_m2: 0.0 },
+        _ => /* sensible defaults */ PhysProps { density: 1500.0, tensile_mpa: 5.0, compressive_mpa: 30.0,
+            shear_mpa: 10.0, fracture_energy_j_per_m2: 50.0,
+            porosity: 0.05, permeability_m2: 1.0e-14 },
+    }
+}
+
+#[inline] pub fn gate(id: MaterialId) -> Gate {
+    use MaterialId::*;
+    match id {
+        Diamond => Gate { tier_lock: 4, kinetic: KineticRequirement::MinSpecificJPerM2(2_500.0) },
+        TemperedGlass => Gate { tier_lock: 0, kinetic: KineticRequirement::MinImpulseNS(15.0) },
+        _ => Gate { tier_lock: 0, kinetic: KineticRequirement::None },
+    }
+}
+
+
+#[inline]
+pub fn dig_energy_cost_j_per_m3(mat: MaterialId) -> f32 {
+    let p = phys_props(mat);
+    let sigma_c_pa = (p.compressive_mpa.max(0.01)) * 1.0e6; // MPa->Pa
+    const K: f32 = 15.0; // tune globally; higher = harder to dig
+    quantize(sigma_c_pa * K)
+}
+/// Minimal legality gate the solver enforces before performing a destructive edit.
+/// Keep it tiny so determinism stays pure.
+#[derive(Copy, Clone, Debug)]
+pub enum KineticRequirement {
+    None,
+    /// Absolute energy (J) delivered at the contact/region this tick
+    MinEnergyJ(f32),
+    /// Specific energy per affected area (J/m^2) — good for puncture/tearing
+    MinSpecificJPerM2(f32),
+    /// Impulse threshold (N·s) — handy for brittle percussive breaks
+    MinImpulseNS(f32),
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct Gate {
+    pub tier_lock: u8,                // progression lock
+    pub kinetic: KineticRequirement,  // numeric check
+}
+pub struct Material {
+    pub contact: MatProps,  // what you already have
+    pub phys: PhysProps,    // new facet
+    pub gate: Gate,         // tiny gate
+}
+
+/// Single source of truth in this crate:
+#[inline] pub fn material(id: MaterialId) -> Material {
+    Material { contact: contact_props(id), phys: phys_props(id), gate: gate(id) }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,5 +404,15 @@ mod tests {
         let m1 = mu_dynamic(&p, 10.0);
         assert!(m0 <= p.mu_s + 1e-6 && m0 >= p.mu_k - 1e-6);
         assert!((m1 - p.mu_k).abs() < 1e-3);
+    }
+}
+#[inline]
+pub fn passes_gate(g: &Gate, energy_j: f32, area_m2: f32, impulse_ns: f32, player_tier: u8) -> bool {
+    if player_tier < g.tier_lock { return false; }
+    match g.kinetic {
+        KineticRequirement::None => true,
+        KineticRequirement::MinEnergyJ(t)        => energy_j >= t,
+        KineticRequirement::MinSpecificJPerM2(t) => area_m2 > 0.0 && (energy_j / area_m2) >= t,
+        KineticRequirement::MinImpulseNS(t)      => impulse_ns >= t,
     }
 }

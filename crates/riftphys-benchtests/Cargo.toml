@@ -43,7 +43,8 @@ clap = { version = "4", features = ["derive"] }
 rand = "0.8"
 statrs = "0.16" # optional, we’ll compute p99 ourselves
 riftphys-vox = { path = "../riftphys-vox", features = ["default", "gpu-wgpu"] } # or no features if you only want CPU
-
+wgpu = { version = "0.20", optional = true }
+bytemuck = { version = "1", features = ["derive"], optional = true }
 glam = { workspace = true }
 serde_json = "1.0.145"
 anyhow = "1.0.100"
