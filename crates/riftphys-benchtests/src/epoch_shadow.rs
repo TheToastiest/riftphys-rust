@@ -1,4 +1,4 @@
-use riftphys_world::{World};
+use riftphys_world::world;
 use riftphys_core::BodyId;
 use glam::Quat;
 
@@ -12,15 +12,15 @@ pub struct Eps {
 }
 
 pub struct EpochShadow {
-    pub active: World,
-    pub shadow: World,
+    pub active: world::World,
+    pub shadow: world::World,
     eq_ticks: u32,
     promote_after: u32,
     epoch_counter: u64,
 }
 
 impl EpochShadow {
-    pub fn new(active: World, shadow: World, epoch_start: u64, promote_after: u32) -> Self {
+    pub fn new(active: world::World, shadow: world::World, epoch_start: u64, promote_after: u32) -> Self {
         Self { active, shadow, eq_ticks: 0, promote_after, epoch_counter: epoch_start }
     }
 
@@ -68,7 +68,7 @@ impl EpochShadow {
     }
 }
 
-fn near_equal_worlds(a: &World, b: &World, eps: Eps) -> bool {
+fn near_equal_worlds(a: &world::World, b: &world::World, eps: Eps) -> bool {
     let n = a.num_bodies().min(b.num_bodies());
     for i in 0..n {
         let id = BodyId(i);

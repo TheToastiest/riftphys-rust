@@ -3,7 +3,7 @@ use riftphys_core::{vec3, iso, quat_identity, Velocity, EpochDescriptor};
 use riftphys_geom::{Shape, MassProps, Material};
 
 fn main() {
-    let mut w = WorldBuilder::new().with_capacity(256, 256).build();
+    let mut w = world::WorldBuilder::new().with_capacity(256, 256).build();
     w.set_rng_seed(0xABCD1234);
 
     // Start on “Earth” gravity

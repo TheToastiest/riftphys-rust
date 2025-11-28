@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::RigData;
 use riftphys_core::{Isometry, vec3};
 use riftphys_geom::Shape;
-use riftphys_world::World;
+use riftphys_world::world::World;
 use riftphys_articulation::*;
 
 /* ─────────────────────────  Physics rig schema ───────────────────────── */

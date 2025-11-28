@@ -21,6 +21,7 @@ members = [
     "crates/riftphys-bridge-uriel",
     "crates/riftphys-riftnet",
     "tools/riftphys-vis-tool",
+    "crates/riftphys-ffi",
 ]
 resolver = "2"
 

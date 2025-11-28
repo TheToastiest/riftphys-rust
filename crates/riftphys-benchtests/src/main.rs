@@ -47,8 +47,8 @@
 
         #[cfg(not(feature = "shadow_epoch"))]
         pub struct EpochShadow {
-            pub active: riftphys_world::World,
-            pub shadow: riftphys_world::World, // kept so existing code compiles unchanged
+            pub active: riftphys_world::world::World,
+            pub shadow: riftphys_world::world::World, // kept so existing code compiles unchanged
         }
         #[derive(Clone)]
         struct Walker {
@@ -63,7 +63,7 @@
             turn_dir:  f32,   // +1 or -1, flips each time
         }
 
-        fn translate_rig(world: &mut World, bodies: &[BodyId], delta: riftphys_core::Vec3) {
+        fn translate_rig(world: &mut world::World, bodies: &[BodyId], delta: riftphys_core::Vec3) {
             for &b in bodies {
                 let mut p = world.get_body_pose(b);
                 p.pos += delta;
@@ -72,7 +72,7 @@
         }
 
         fn spawn_walker(
-            world: &mut World,
+            world: &mut world::World,
             phys: &PhysicsRig,
             origin_ws: riftphys_core::Vec3,
             heading_rad: f32,
@@ -114,8 +114,8 @@
         }
         #[cfg(not(feature = "shadow_epoch"))]
         impl EpochShadow {
-            pub fn new(active: riftphys_world::World,
-                       shadow: riftphys_world::World,
+            pub fn new(active: riftphys_world::world::World,
+                       shadow: riftphys_world::world::World,
                        _epoch_start: u32,
                        _promote_after: u32) -> Self {
                 Self { active, shadow }
@@ -157,7 +157,7 @@
 
         /* ====================== SCENE BUILDER ====================== */
         struct Scene {
-            world: World,
+            world: world::World,
             car: VehicleInstance,
             hf: HeightField,
             sphere_id: BodyId,
@@ -167,7 +167,7 @@
             right_foot_id: BodyId,
         }
         fn load_or_build_rig(
-            world: &mut World,
+            world: &mut world::World,
             physics_path: &str,
             rig_json_fallback: Option<&str>,
         ) -> anyhow::Result<(BodyId, BodyId, BodyId)> {
@@ -197,7 +197,7 @@
         fn build_scene(print_every: u32) -> Scene {
             use glam::{UVec2, Vec2};
 
-            let mut w = WorldBuilder::new().with_capacity(256, 256).build();
+            let mut w = world::WorldBuilder::new().with_capacity(256, 256).build();
             w.set_epoch(1);
             w.set_rng_seed(0xBADC0FFEE);
             w.set_debug(DebugSettings {
@@ -214,7 +214,7 @@
             mat_dyn.mu_s = 1.2;         // grippy
             mat_dyn.mu_k = 1.0;
 
-            fn add_planet_ground(w: &mut World, center: [f32;3], radius: f32) {
+            fn add_planet_ground(w: &mut world::World, center: [f32;3], radius: f32) {
                 // Static body (inv_mass=0), no dynamics
                 let body = w.add_body(
                     iso(vec3(center[0], center[1], center[2]), quat_identity()),
@@ -628,7 +628,7 @@
                 // ---------- pack & broadcast ACTIVE snapshot ----------
                 let tick_u64 = step;
                 let epoch_u64 = sim.active.epoch_id;
-                fn encode_shape(world: &World, bid: BodyId) -> (f32,f32,f32,u32) {
+                fn encode_shape(world: &world::World, bid: BodyId) -> (f32,f32,f32,u32) {
                     use riftphys_geom::Shape;
                     match world.primary_shape(bid) {
                         Some(Shape::Sphere { r }) => (r, r, r, 1),
@@ -641,7 +641,7 @@
                     }
                 }
                 #[inline]
-                fn apply_pelvis_yaw(w: &mut World, pelvis: BodyId, dy: f32) {
+                fn apply_pelvis_yaw(w: &mut world::World, pelvis: BodyId, dy: f32) {
                     if dy == 0.0 { return; }
                     let mut pose = w.get_body_pose(pelvis);
                     let dq = glam::Quat::from_rotation_y(dy);

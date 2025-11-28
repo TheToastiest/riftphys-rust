@@ -50,10 +50,10 @@ struct DrawCollider {
 }
 
 /* ---------------- scene ---------------- */
-fn build_scene() -> (World, Vec<DrawCollider>, BodyId) {
+fn build_scene() -> (world::World, Vec<DrawCollider>, BodyId) {
     use std::sync::Arc;
 
-    let mut w = WorldBuilder::new().with_capacity(256, 256).build();
+    let mut w = world::WorldBuilder::new().with_capacity(256, 256).build();
     w.set_epoch(1);
     w.set_rng_seed(0xBADC0FFEE);
     w.set_debug(DebugSettings {
@@ -143,7 +143,7 @@ fn build_scene() -> (World, Vec<DrawCollider>, BodyId) {
 }
 
 /* ---------------- instance build ---------------- */
-fn build_instances(world: &World, drawlist: &[DrawCollider]) -> Vec<Instance> {
+fn build_instances(world: &world::World, drawlist: &[DrawCollider]) -> Vec<Instance> {
     fn color_rgb(r: u8, g: u8, b: u8) -> glam::Vec3 {
         glam::Vec3::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
     }
@@ -193,7 +193,7 @@ fn build_instances(world: &World, drawlist: &[DrawCollider]) -> Vec<Instance> {
 struct App {
     renderer: Option<Renderer>,
     window:   Option<Arc<Window>>,
-    world: Option<World>,
+    world: Option<world::World>,
     drawlist: Vec<DrawCollider>,
     paused: bool,
     last: Instant,

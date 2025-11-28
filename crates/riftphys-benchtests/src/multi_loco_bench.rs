@@ -38,7 +38,7 @@ struct Walker {
 }
 
 impl Walker {
-    fn step(&mut self, world: &mut World, dt: f32) {
+    fn step(&mut self, world: &mut world::World, dt: f32) {
         // 1) Update desired heading from the path pattern
         match &mut self.path {
             PathKind::Straight { dir_ws } => {
@@ -122,7 +122,7 @@ fn load_physics_rig(
     }
 }
 fn spawn_walker_instance(
-    world: &mut World,
+    world: &mut world::World,
     phys: &PhysicsRig,
     origin_ws: riftphys_core::Vec3,
     phase01: f32,
@@ -175,10 +175,10 @@ fn spawn_walker_instance(
         path,
     })
 }
-fn build_world(print_every: u32) -> (World, riftphys_terrain::HeightField) {
+fn build_world(print_every: u32) -> (world::World, riftphys_terrain::HeightField) {
 
 
-    let mut w = WorldBuilder::new()
+    let mut w = world::WorldBuilder::new()
         .with_capacity(1024, 4096)
         .build();
 
@@ -241,7 +241,7 @@ fn build_world(print_every: u32) -> (World, riftphys_terrain::HeightField) {
     (w, hf)
 }
 fn spawn_walker_grid(
-    world: &mut World,
+    world: &mut world::World,
     phys: &PhysicsRig,
 ) -> Result<Vec<Walker>> {
     let gait = loco::GaitSpec {

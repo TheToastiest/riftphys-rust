@@ -19,7 +19,7 @@ struct Perf {
     contacts: u64, errors: u64,
 }
 
-fn build_world_mega(seed: u64, print_every: u32, gspec: GravitySpec, dt: f32) -> (World, Vec<BodyId>) {
+fn build_world_mega(seed: u64, print_every: u32, gspec: GravitySpec, dt: f32) -> (world::World, Vec<BodyId>) {
     let n_spheres   = 500usize;
     let n_capsules  = 250usize;
     let n_boxes     = 250usize;
@@ -29,7 +29,7 @@ fn build_world_mega(seed: u64, print_every: u32, gspec: GravitySpec, dt: f32) ->
     let cap_bodies = n_spheres + n_capsules + n_boxes + n_walls + n_dynplanes + 32;
     let cap_cols   = cap_bodies;
 
-    let mut w = WorldBuilder::new().with_capacity(cap_bodies, cap_cols).build();
+    let mut w = world::WorldBuilder::new().with_capacity(cap_bodies, cap_cols).build();
     w.set_rng_seed(seed);
     w.set_epoch(1);
     w.set_debug(DebugSettings {
@@ -123,7 +123,7 @@ fn build_world_mega(seed: u64, print_every: u32, gspec: GravitySpec, dt: f32) ->
     (w, ids)
 }
 
-fn run_one(name: &'static str, mut w: World, ticks: usize, dt: f32) -> Perf {
+fn run_one(name: &'static str, mut w: world::World, ticks: usize, dt: f32) -> Perf {
     let mut step_ms: Vec<f32> = Vec::with_capacity(ticks);
     let mut total_contacts: u64 = 0;
     let mut errors: u64 = 0;

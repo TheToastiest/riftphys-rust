@@ -30,7 +30,7 @@ pub struct AccelBlock {
     pub prop: Option<usize>,
 }
 
-pub fn validate_and_queue(world: &mut riftphys_world::World, sd: &SimulationDescriptor) -> Result<()> {
+pub fn validate_and_queue(world: &mut riftphys_world::world::World, sd: &SimulationDescriptor) -> Result<()> {
     if !(sd.dt > 0.0 && sd.dt <= 1.0) { return Err(anyhow!("dt out of range")); }
 
     // Gravity

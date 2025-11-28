@@ -1,5 +1,5 @@
 use riftphys_locomotion::loco_state as loco;
-use riftphys_world::World;
+use riftphys_world::world::World;
 use riftphys_core::{Velocity, vec3};
 use glam::Vec3;
 

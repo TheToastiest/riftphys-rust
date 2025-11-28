@@ -12,7 +12,7 @@ use riftphys_vox::{Ray, RayHit, VoxelChunk};
 use riftphys_vox::gpu_wgpu::{GpuRaycaster, HitGpu};
 
 // World + models
-use riftphys_world::{World, WorldBuilder};
+use riftphys_world::{world};
 use riftphys_core::{iso, quat_identity, vec3, BodyId, Velocity};
 use riftphys_geom::{Material, MassProps, Shape};
 use riftphys_gravity::GravitySpec;
@@ -171,12 +171,12 @@ fn gen_rays(
 // World with capsule + aero/prop (grounded hysteresis gating)
 // -----------------------------------------------------------------------------
 struct Scene {
-    world: World,
+    world: world::World,
     capsule_id: BodyId,
 }
 
 fn build_world(args: &Args) -> Scene {
-    let mut w = WorldBuilder::new().with_capacity(512, 2048).build();
+    let mut w = world::WorldBuilder::new().with_capacity(512, 2048).build();
     w.set_epoch(1);
     w.set_rng_seed(0xC0FFEE);
     w.set_debug(DebugSettings {
@@ -294,7 +294,7 @@ fn orient_y_to(dir: Vec3) -> Quat {
     Quat::from_xyzw(v.x, v.y, v.z, w).normalize()
 }
 
-fn encode_shape(world: &World, bid: BodyId) -> (f32, f32, f32, u32) {
+fn encode_shape(world: &world::World, bid: BodyId) -> (f32, f32, f32, u32) {
     use riftphys_geom::Shape;
     match world.primary_shape(bid) {
         Some(Shape::Sphere { r }) => (r, r, r, 1),
