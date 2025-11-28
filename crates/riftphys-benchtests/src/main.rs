@@ -20,9 +20,8 @@
         use std::sync::Arc;
         use std::time::{Duration, Instant};
         use glam::Vec3;
-        mod bench_loco;
-        use bench_loco::{loco_tick, loco_tick_with_heading};
-        use riftphys_locomotion::{self as loco, TransitionPlan, TurnPlan, LocoState}; // add
+        use riftphys_bench_helpers::bench_loco::{loco_tick, loco_tick_with_heading};
+        use riftphys_locomotion::loco_state::{self as loco, TransitionPlan, TurnPlan, LocoState}; // add
         use riftphys_bridge_uriel as bridge;
         use riftphys_world::*;
         use riftphys_core::{vec3, iso, quat_identity, Velocity, BodyId};

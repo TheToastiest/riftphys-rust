@@ -1855,6 +1855,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "riftphys-bench-helpers"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "riftphys-core",
+ "riftphys-locomotion",
+ "riftphys-world",
+]
+
+[[package]]
 name = "riftphys-benchtests"
 version = "0.2.0"
 dependencies = [
@@ -1866,6 +1876,7 @@ dependencies = [
  "rand",
  "riftphys-acceleration",
  "riftphys-aero",
+ "riftphys-bench-helpers",
  "riftphys-bridge-uriel",
  "riftphys-controllers",
  "riftphys-core",

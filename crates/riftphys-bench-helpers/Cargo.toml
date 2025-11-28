@@ -1,0 +1,10 @@
+[package]
+name = "riftphys-bench-helpers"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+riftphys-core = { path = "../riftphys-core" }
+riftphys-world = { path = "../riftphys-world" }
+riftphys-locomotion = { path = "../riftphys-locomotion" }
+glam = { workspace = true }
