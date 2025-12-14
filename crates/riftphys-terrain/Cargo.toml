@@ -1,11 +1,12 @@
 [package]
 name = "riftphys-terrain"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [features]
-image = ["dep:image"]   # optional PNG heightmap loading
+image = ["dep:image"]
 
 [dependencies]
-glam = { version = "0.27", default-features = false, features = ["libm"] }
+riftphys-core = { path = "../riftphys-core" }
+glam = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }

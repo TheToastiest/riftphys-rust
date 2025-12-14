@@ -109,12 +109,12 @@ pub fn mat_vis(id: MaterialId) -> MatVis {
         HDPE          => mv(205,210,220, 0.35, 0.00),
         LDPE          => mv(205,210,220, 0.45, 0.00),
         Polypropylene => mv(210,215,220, 0.45, 0.00),
-        POM_Delrin    => mv( 30, 30, 30, 0.55, 0.00),
+        PomDelrin    => mv( 30, 30, 30, 0.55, 0.00),
         Nylon         => mv(220,225,230, 0.60, 0.00),
         ABS           => mv(210,210,210, 0.65, 0.00),
-        PVC_Rigid     => mv(200,205,210, 0.55, 0.00),
+        PvcRigid     => mv(200,205,210, 0.55, 0.00),
         Polycarbonate => mv(210,215,220, 0.28, 0.00),
-        Acrylic_PMMA  => mv(220,225,230, 0.22, 0.00),
+        AcrylicPmma  => mv(220,225,230, 0.22, 0.00),
         PEEK          => mv(190,175,160, 0.70, 0.00),
         PET           => mv(210,215,220, 0.50, 0.00),
         Polyurethane  => mv(220,220,210, 0.70, 0.00),
@@ -165,8 +165,8 @@ pub fn mat_vis(id: MaterialId) -> MatVis {
         Fiberglass       => mv(200,205,210, 0.65, 0.00),
         GripTape         => mv( 18, 18, 18, 0.98, 0.00),
         PaintedSteel     => mv(150,155,162, 0.60, 0.05),  // paint → not fully metallic
-        EVA_Foam         => mv(210,210,210, 0.90, 0.00),
-        PU_Foam          => mv(235,235,220, 0.92, 0.00),
+        EvaFoam         => mv(210,210,210, 0.90, 0.00),
+        PuFoam          => mv(235,235,220, 0.92, 0.00),
     }
 }
 

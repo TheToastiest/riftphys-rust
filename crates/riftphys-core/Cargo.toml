@@ -2,14 +2,27 @@
 name = "riftphys-core"
 version = "0.2.0"
 edition = "2021"
+# Strongly recommend pinning MSRV once you lock a toolchain.
+rust-version = "1.76"
 
 [features]
+default = []
 fixed = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "glam/serde"]
+deterministic = ["glam/scalar-math", "blake3/pure"]
+
+# tripwires (not enabled by default)
+glam-fast-math = ["glam/fast-math"]
+glam-core-simd = ["glam/core-simd"]
 
 [dependencies]
-glam   = { workspace = true }
-blake3 = { workspace = true }
-serde  = { workspace = true, optional = true }
+# Make feature intent explicit. This prevents accidental “no_std” drift from workspace config,
+# and makes it harder for someone to sneak in glam features via defaults. :contentReference[oaicite:3]{index=3}
+glam   = { workspace = true, default-features = false, features = ["std"] }
+
+# Same story: keep it lean and predictable; avoid rayon/mmap/etc unless you explicitly want them. :contentReference[oaicite:4]{index=4}
+blake3 = { workspace = true, default-features = false, features = ["std"] }
+
+serde  = { workspace = true, optional = true, features = ["derive"] }
 
 [build-dependencies]

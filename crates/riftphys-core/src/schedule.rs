@@ -13,19 +13,23 @@ pub enum StepStage {
 
 pub fn schedule_digest(stages: &[StepStage]) -> [u8; 32] {
     let mut h = StepHasher::new();
-    for s in stages { h.update_bytes(&[*s as u8]); }
+    for s in stages {
+        h.update_u8(*s as u8);
+    }
     h.finalize()
 }
+
+#[repr(u8)]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Slot {
-    PreIntegrate,       // e.g., user inputs, controllers
-    Gravity,            // uniform gravity accumulation
-    Accel,              // <-- Phase 11: aero + propulsion (after gravity)
-    ContactsBroadphase,
-    ContactsNarrowphase,
-    Solver,
-    Integrate,          // integrate position/orientation
-    PostIntegrate,      // housekeeping
+    PreIntegrate       = 1,
+    Gravity            = 2,
+    Accel              = 3,
+    ContactsBroadphase = 4,
+    ContactsNarrowphase= 5,
+    Solver             = 6,
+    Integrate          = 7,
+    PostIntegrate      = 8,
 }
 
 pub const FIXED_ORDER: &[Slot] = &[

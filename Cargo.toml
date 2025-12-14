@@ -9,7 +9,7 @@ members = [
     "crates/riftphys-benchtests",
     "crates/riftphys-gravity",
     "crates/riftphys-terrain",
-    "crates/riftphys-melee",
+    "crates/riftphys-query",
     "crates/riftphys-materials",
     "crates/riftphys-controllers",
     "crates/riftphys-aero",
@@ -26,9 +26,11 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-wgpu = "0.20"
-glam   = { version = "0.27", default-features = false, features = ["libm"] }
-blake3 = "1.5"
-serde  = { version = "1", features = ["derive"] }
-bitvec = "1.0"
+wgpu   = "0.20"
 winit  = "=0.30.12"
+bitvec = "1.0"
+
+# Make these explicit so member crates can’t “secretly” drift.
+glam   = { version = "0.27", default-features = false, features = ["libm"] }
+blake3 = { version = "1.5",  default-features = false, features = ["std"] }
+serde  = { version = "1", features = ["derive"] }

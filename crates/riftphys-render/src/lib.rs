@@ -8,7 +8,7 @@ pub mod palette;
 
 use std::sync::Arc;
 use winit::window::Window;
-use riftphys_materials as mats;
+use riftphys_materials::materials as mats;
 
 use std::f32::consts::PI;
 use glam::{Mat4, Vec3, Quat};

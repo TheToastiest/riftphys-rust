@@ -27,11 +27,11 @@ use winit::event::{ElementState, WindowEvent, KeyEvent, MouseButton, DeviceEvent
 use winit::event_loop::{ActiveEventLoop, EventLoop, DeviceEvents};
 use wgpu::SurfaceError;
 use riftphys_render::{Renderer, Instance, ShapeKind, trs};
-
+use riftphys_materials::materials::*;
 use riftphys_viz::DebugSettings;
 use riftphys_world::*;
 use riftphys_core::{iso, vec3, quat_identity, Velocity, BodyId};
-use riftphys_geom::{MassProps, Material, Shape};
+use riftphys_geom::{MassProps, Shape};
 use riftphys_gravity::GravitySpec;
 
 use riftphys_aero::{CombinedAero, FlatPlateDrag, ISA, SimpleWing};
@@ -68,63 +68,119 @@ fn build_scene() -> (world::World, Vec<DrawCollider>, BodyId) {
 
     let mut drawlist: Vec<DrawCollider> = Vec::new();
 
-    // Ground
-    let ground = w.add_body(iso(vec3(0.0, 0.0, 0.0), quat_identity()), Velocity::default(), MassProps::infinite(), false);
+    // Simple material aliases for the scene
+    let mat_ground = material(MaterialId::Concrete);
+    let mat_wall   = material(MaterialId::Concrete);
+    let mat_metal  = material(MaterialId::Steel);
+    let mat_rubber = material(MaterialId::Rubber);
+
+    // Ground (static, infinite mass)
+    let ground = w.add_body(
+        iso(vec3(0.0, 0.0, 0.0), quat_identity()),
+        Velocity::default(),
+        MassProps::infinite(),
+        false,
+    );
     let ground_shape = Shape::Box { hx: 10.0, hy: 0.5, hz: 10.0 };
-    w.add_collider(ground, ground_shape, Material::default());
+    w.add_collider(ground, ground_shape, mat_ground);
     drawlist.push(DrawCollider { body: ground, shape: ground_shape });
 
-    // Wall
-    let wall = w.add_body(iso(vec3(-3.5, 2.0, 0.0), quat_identity()), Velocity::default(), MassProps::infinite(), false);
+    // Wall (static, infinite mass)
+    let wall = w.add_body(
+        iso(vec3(-3.5, 2.0, 0.0), quat_identity()),
+        Velocity::default(),
+        MassProps::infinite(),
+        false,
+    );
     let wall_shape = Shape::Box { hx: 0.05, hy: 2.0, hz: 2.0 };
-    w.add_collider(wall, wall_shape, Material::default());
+    w.add_collider(wall, wall_shape, mat_wall);
     drawlist.push(DrawCollider { body: wall, shape: wall_shape });
 
-    // Sphere
-    let s = w.add_body(iso(vec3(-5.0, 2.0, 0.0), quat_identity()),
-                       Velocity { lin: vec3(20.0, 0.0, 0.0), ang: vec3(0.0, 0.0, 0.0) },
-                       MassProps::from_sphere(0.25, 1000.0), true);
+    // Sphere (dynamic; mass from Steel density)
+    let s = w.add_body(
+        iso(vec3(-5.0, 2.0, 0.0), quat_identity()),
+        Velocity { lin: vec3(20.0, 0.0, 0.0), ang: vec3(0.0, 0.0, 0.0) },
+        MassProps::from_sphere(0.25, MaterialId::Steel),
+        true,
+    );
     let sphere_shape = Shape::Sphere { r: 0.25 };
-    w.add_collider(s, sphere_shape, Material::default());
+    w.add_collider(s, sphere_shape, mat_metal);
     drawlist.push(DrawCollider { body: s, shape: sphere_shape });
 
-    // Capsule (with aero/prop)
-    let c = w.add_body(iso(vec3(2.0, 1.5, 0.0), quat_identity()),
-                       Velocity { lin: vec3(250.0, 0.0, 0.0), ang: vec3(0.0, 0.0, 0.0) },
-                       MassProps::from_capsule(0.25, 0.5, 750.0), true);
+    // Capsule (dynamic; mass from Steel density)
+    let c = w.add_body(
+        iso(vec3(2.0, 1.5, 0.0), quat_identity()),
+        Velocity { lin: vec3(250.0, 0.0, 0.0), ang: vec3(0.0, 0.0, 0.0) },
+        MassProps::from_capsule(0.25, 0.5, MaterialId::Steel),
+        true,
+    );
     let capsule_shape = Shape::Capsule { r: 0.25, hh: 0.5 };
-    w.add_collider(c, capsule_shape, Material::default());
+    w.add_collider(c, capsule_shape, mat_metal);
     drawlist.push(DrawCollider { body: c, shape: capsule_shape });
 
-    // Balance demo
-    let pelvis = w.add_body(iso(vec3(0.0, 1.20, 0.50), quat_identity()), Velocity::default(), MassProps::from_capsule(0.15, 0.35, 80.0), true);
+    // Balance demo – pelvis (dynamic; Steel)
+    let pelvis = w.add_body(
+        iso(vec3(0.0, 1.20, 0.50), quat_identity()),
+        Velocity::default(),
+        MassProps::from_capsule(0.15, 0.35, MaterialId::Steel),
+        true,
+    );
     let pelvis_shape = Shape::Capsule { r: 0.15, hh: 0.35 };
-    w.add_collider(pelvis, pelvis_shape, Material::default());
+    w.add_collider(pelvis, pelvis_shape, mat_metal);
     drawlist.push(DrawCollider { body: pelvis, shape: pelvis_shape });
 
-    let left_foot = w.add_body(iso(vec3(-0.37, 0.55, 0.50), quat_identity()), Velocity::default(), MassProps::from_box(vec3(0.12, 0.05, 0.25), 20.0), true);
-    let right_foot = w.add_body(iso(vec3( 0.37, 0.55, 0.50), quat_identity()), Velocity::default(), MassProps::from_box(vec3(0.12, 0.05, 0.25), 20.0), true);
+    // Feet (dynamic; Rubber so you actually see traction differences)
+    let left_foot = w.add_body(
+        iso(vec3(-0.37, 0.55, 0.50), quat_identity()),
+        Velocity::default(),
+        MassProps::from_box(vec3(0.12, 0.05, 0.25), MaterialId::Rubber),
+        true,
+    );
+    let right_foot = w.add_body(
+        iso(vec3( 0.37, 0.55, 0.50), quat_identity()),
+        Velocity::default(),
+        MassProps::from_box(vec3(0.12, 0.05, 0.25), MaterialId::Rubber),
+        true,
+    );
     let foot_shape = Shape::Box { hx: 0.12, hy: 0.051, hz: 0.25 };
-    w.add_collider(left_foot,  foot_shape, Material::default());
-    w.add_collider(right_foot, foot_shape, Material::default());
+    w.add_collider(left_foot,  foot_shape, mat_rubber);
+    w.add_collider(right_foot, foot_shape, mat_rubber);
     drawlist.push(DrawCollider { body: left_foot,  shape: foot_shape });
     drawlist.push(DrawCollider { body: right_foot, shape: foot_shape });
 
-    w.add_balance_controller(pelvis, left_foot, right_foot,
-                             BalanceParams { k_accel: 25.0, max_accel: 40.0, com_height: 1.0, quantize: 1e-6 });
+    w.add_balance_controller(
+        pelvis,
+        left_foot,
+        right_foot,
+        BalanceParams {
+            k_accel: 25.0,
+            max_accel: 40.0,
+            com_height: 1.0,
+            quantize: 1e-6,
+        },
+    );
 
-    // Aero/Prop
+    // Aero/Prop stays the same
     let isa = ISA::default();
     let drag = Arc::new(FlatPlateDrag { cd: 1.0, area_m2: 0.20, isa });
     let drag_h = w.models_mut().register_aero(drag);
 
     let aero_capsule = Arc::new(CombinedAero::new(vec![
         Arc::new(FlatPlateDrag { cd: 1.0, area_m2: 0.60, isa: ISA::default() }),
-        Arc::new(SimpleWing { cl_per_rad: 6.0, stall_rad: 0.8, area_m2: 0.60, lift_dir_body: Vec3::Z,
-            isa: ISA::default(), cd0: 0.05, k_induced: 0.05 }),
+        Arc::new(SimpleWing {
+            cl_per_rad: 6.0,
+            stall_rad: 0.8,
+            area_m2: 0.60,
+            lift_dir_body: Vec3::Z,
+            isa: ISA::default(),
+            cd0: 0.05,
+            k_induced: 0.05,
+        }),
     ]));
     let prop_caps = Arc::new(SimplePropulsion {
-        thrust_constant_n: 0.0, thrust_max_n: 3000.0, curve: ThrottleCurve::QuadEaseIn
+        thrust_constant_n: 0.0,
+        thrust_max_n: 3000.0,
+        curve: ThrottleCurve::QuadEaseIn,
     });
     let aero_capsule_h = w.models_mut().register_aero(aero_capsule);
     let prop_caps_h    = w.models_mut().register_prop(prop_caps);
@@ -136,11 +192,15 @@ fn build_scene() -> (world::World, Vec<DrawCollider>, BodyId) {
 
     // Gravity → epoch
     w.queue_gravity_swap(GravitySpec::LayeredPlanet {
-        surface_g: 9.81, radius: 6_371_000.0, center: [0.0, -6_371_000.0, 0.0], min_r: 1_000.0
+        surface_g: 9.81,
+        radius: 6_371_000.0,
+        center: [0.0, -6_371_000.0, 0.0],
+        min_r: 1_000.0,
     });
 
     (w, drawlist, s)
 }
+
 
 /* ---------------- instance build ---------------- */
 fn build_instances(world: &world::World, drawlist: &[DrawCollider]) -> Vec<Instance> {

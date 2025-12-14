@@ -2,7 +2,8 @@
 name = "riftphys-dynamics"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.76"
 
 [dependencies]
 riftphys-core = { path = "../riftphys-core" }
-glam = { workspace = true }
+glam = "0.27.0"

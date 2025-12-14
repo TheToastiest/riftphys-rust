@@ -1,3 +1,6 @@
 /target
 /rigs/
 /tmp/
+/target/debug
+/target/release
+/ignore

@@ -1,8 +1,9 @@
 use std::time::Instant;
-use glam::Vec3 as GVec3;
+// use glam::Vec3 as GVec3;
 use riftphys_world::*;
 use riftphys_core::{vec3, iso, quat_identity, Velocity, BodyId};
-use riftphys_geom::{Shape, MassProps, Material};
+use riftphys_materials::materials::*;
+use riftphys_geom::{Shape, MassProps};
 use riftphys_gravity::GravitySpec;
 use riftphys_viz::DebugSettings;
 
@@ -24,104 +25,141 @@ fn build_world_mega(seed: u64, print_every: u32, gspec: GravitySpec, dt: f32) ->
     let n_capsules  = 250usize;
     let n_boxes     = 250usize;
     let n_walls     = 12usize;
-    let n_dynplanes = 8usize; // “dynamic planes” ~ thin big boxes
+    let n_dynplanes = 8usize;
 
     let cap_bodies = n_spheres + n_capsules + n_boxes + n_walls + n_dynplanes + 32;
     let cap_cols   = cap_bodies;
 
-    let mut w = world::WorldBuilder::new().with_capacity(cap_bodies, cap_cols).build();
+    let mut w = world::WorldBuilder::new()
+        .with_capacity(cap_bodies, cap_cols)
+        .build();
+
     w.set_rng_seed(seed);
     w.set_epoch(1);
     w.set_debug(DebugSettings {
         print_every,
-        show_bodies:false, show_contacts:false, show_impulses:false, show_energy:false,
-        max_lines:16, json_every:0,
+        show_bodies:   false,
+        show_contacts: false,
+        show_impulses: false,
+        show_energy:   false,
+        max_lines:     16,
+        json_every:    0,
     });
     w.queue_gravity_swap(gspec);
 
     let mut ids: Vec<BodyId> = Vec::new();
 
-    // Ground (static)
-    let ground = w.add_body(iso(vec3(0.0, 0.0, 0.0), quat_identity()), Velocity::default(), MassProps::infinite(), false);
-    let mut gmat = Material::default(); gmat.mu_s=0.8; gmat.mu_k=0.7;
-    w.add_collider(ground, Shape::Box{hx:400.0, hy:0.5, hz:400.0}, gmat);
+    // Ground (static) – grippy "grit" slab
+    let ground = w.add_body(
+        iso(vec3(0.0, 0.0, 0.0), quat_identity()),
+        Velocity::default(),
+        MassProps::infinite(),
+        false,
+    );
+    let gmat = material(MaterialId::Grit);
+    w.add_collider(ground, Shape::Box { hx: 400.0, hy: 0.5, hz: 400.0 }, gmat);
 
-    // Thin vertical walls to force CCD
+    // Thin vertical walls (concrete)
     for wi in 0..n_walls {
         let x = -12.0 + wi as f32 * 2.0;
-        let wall = w.add_body(iso(vec3(x, 2.0, 0.0), quat_identity()), Velocity::default(), MassProps::infinite(), false);
-        let mut m = Material::default(); m.mu_s=0.6; m.mu_k=0.5;
-        w.add_collider(wall, Shape::Box{hx:0.05, hy:3.0, hz:25.0}, m);
+        let wall = w.add_body(
+            iso(vec3(x, 2.0, 0.0), quat_identity()),
+            Velocity::default(),
+            MassProps::infinite(),
+            false,
+        );
+        let m = material(MaterialId::Concrete);
+        w.add_collider(wall, Shape::Box { hx: 0.05, hy: 3.0, hz: 25.0 }, m);
     }
 
-    // Dynamic planes (really: thin heavy slabs that can move)
+    // Dynamic planes – big moving slabs (concrete)
     for k in 0..n_dynplanes {
         let z = -15.0 + (k as f32) * 4.0;
         let b = w.add_body(
             iso(vec3(0.0, 1.25, z), quat_identity()),
-            Velocity { lin: vec3((k as f32 * 0.2).sin()*0.5, 0.0, 0.0), ang: vec3(0.0, 0.0, 0.0) },
-            MassProps::from_box(vec3(10.0, 0.25, 5.0), 5_000.0),
-            true
+            Velocity {
+                lin: vec3((k as f32 * 0.2).sin() * 0.5, 0.0, 0.0),
+                ang: vec3(0.0, 0.0, 0.0),
+            },
+            MassProps::from_box(vec3(10.0, 0.25, 5.0), MaterialId::Concrete),
+            true,
         );
-        let mut m = Material::default(); m.mu_s=0.9; m.mu_k=0.8; m.restitution=0.0;
-        w.add_collider(b, Shape::Box{hx:10.0, hy:0.25, hz:5.0}, m);
+        let m = material(MaterialId::Concrete);
+        w.add_collider(b, Shape::Box { hx: 10.0, hy: 0.25, hz: 5.0 }, m);
         ids.push(b);
     }
 
-    // Spheres
+    // Spheres – mostly Default, every 5th is Ice
     for i in 0..n_spheres {
-        let row = i / 50;    // 10x50-ish grid
+        let row = i / 50;
         let col = i % 50;
         let x = -20.0 + (col as f32) * 0.8;
         let z = -20.0 + (row as f32) * 0.8;
         let y = 1.5 + ((i % 7) as f32) * 0.05;
+
+        let mat_id = if i % 5 == 0 { MaterialId::Ice } else { MaterialId::Default };
         let b = w.add_body(
             iso(vec3(x, y, z), quat_identity()),
-            Velocity { lin: vec3(6.0 + (i % 9) as f32 * 0.25, -0.4 * ((i % 5) as f32), 0.3 * ((i % 3) as f32 - 1.0)),
-                ang: vec3(0.0, 0.0, 0.0) },
-            MassProps::from_sphere(0.18, 900.0),
-            true
+            Velocity {
+                lin: vec3(
+                    6.0 + (i % 9) as f32 * 0.25,
+                    -0.4 * ((i % 5) as f32),
+                    0.3 * ((i % 3) as f32 - 1.0),
+                ),
+                ang: vec3(0.0, 0.0, 0.0),
+            },
+            MassProps::from_sphere(0.18, mat_id),
+            true,
         );
-        let mut m = Material::default();
-        if i % 5 == 0 { m.mu_s=0.2; m.mu_k=0.1; m.restitution=0.05; } // icy
-        w.add_collider(b, Shape::Sphere{ r:0.18 }, m);
+        let m = material(mat_id);
+        w.add_collider(b, Shape::Sphere { r: 0.18 }, m);
         ids.push(b);
     }
 
-    // Capsules
+    // Capsules – rubbery, high-friction movers
     for j in 0..n_capsules {
         let x = 5.0 + (j % 25) as f32 * 0.6;
         let z = -10.0 + (j / 25) as f32 * 0.7;
         let b = w.add_body(
             iso(vec3(x, 2.0 + (j % 7) as f32 * 0.05, z), quat_identity()),
-            Velocity { lin: vec3(-1.8 - (j % 7) as f32 * 0.2, -0.3, 0.2), ang: vec3(0.0, 0.0, 0.0) },
-            MassProps::from_capsule(0.15, 0.35, 950.0),
-            true
+            Velocity {
+                lin: vec3(-1.8 - (j % 7) as f32 * 0.2, -0.3, 0.2),
+                ang: vec3(0.0, 0.0, 0.0),
+            },
+            MassProps::from_capsule(0.15, 0.35, MaterialId::RubberSoft),
+            true,
         );
-        let mut m = Material::default(); m.mu_s=1.0; m.mu_k=0.8; m.restitution=0.0;
-        w.add_collider(b, Shape::Capsule{ r:0.15, hh:0.35 }, m);
+        let m = material(MaterialId::RubberSoft);
+        w.add_collider(b, Shape::Capsule { r: 0.15, hh: 0.35 }, m);
         ids.push(b);
     }
 
-    // Boxes
+    // Boxes – generic Default solid
     for k in 0..n_boxes {
         let x = -8.0 + (k % 25) as f32 * 0.7;
         let z =  8.0 + (k / 25) as f32 * 0.7;
         let b = w.add_body(
             iso(vec3(x, 1.2 + (k % 5) as f32 * 0.05, z), quat_identity()),
-            Velocity { lin: vec3(0.6 * ((k % 7) as f32 - 3.0), -0.2, 0.3), ang: vec3(0.0, 0.0, 0.0) },
-            MassProps::from_box(vec3(0.2,0.2,0.2), 800.0),
-            true
+            Velocity {
+                lin: vec3(0.6 * ((k % 7) as f32 - 3.0), -0.2, 0.3),
+                ang: vec3(0.0, 0.0, 0.0),
+            },
+            MassProps::from_box(vec3(0.2, 0.2, 0.2), MaterialId::Default),
+            true,
         );
-        w.add_collider(b, Shape::Box{ hx:0.2, hy:0.2, hz:0.2 }, Material::default());
+        let m = material(MaterialId::Default);
+        w.add_collider(b, Shape::Box { hx: 0.2, hy: 0.2, hz: 0.2 }, m);
         ids.push(b);
     }
 
-    // quick warmup for stable broadphase buckets
-    for _ in 0..60 { let _ = w.step(dt); }
+    // Warmup for broadphase buckets
+    for _ in 0..60 {
+        let _ = w.step(dt);
+    }
 
     (w, ids)
 }
+
 
 fn run_one(name: &'static str, mut w: world::World, ticks: usize, dt: f32) -> Perf {
     let mut step_ms: Vec<f32> = Vec::with_capacity(ticks);

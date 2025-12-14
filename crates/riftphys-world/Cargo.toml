@@ -12,7 +12,7 @@ riftphys-viz       = { path = "../riftphys-viz" }
 riftphys-gravity   = { path = "../riftphys-gravity" }
 riftphys-articulation = { path = "../riftphys-articulation" }
 riftphys-terrain = { path = "../riftphys-terrain" }
-riftphys-melee = { path = "../riftphys-melee" }
+riftphys-query = { path = "../riftphys-query" }
 riftphys-materials = { path = "../riftphys-materials" }
 riftphys-controllers = { path = "../riftphys-controllers" }
 

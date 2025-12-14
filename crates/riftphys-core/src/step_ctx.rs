@@ -1,7 +1,7 @@
 use crate::epoch::EpochId;
 
-/// Per-tick context passed into model evaluations and the schedule.
-#[derive(Copy, Clone, Debug)]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct StepCtx {
     pub dt: f32,
     pub tick: u64,

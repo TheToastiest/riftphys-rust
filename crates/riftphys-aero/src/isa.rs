@@ -1,25 +1,48 @@
 // riftphys-aero/src/isa.rs
 
+#[inline]
+fn q6(x: f32) -> f32 {
+    if !x.is_finite() { return 0.0; }
+    (x * 1.0e6_f32).round() * 1.0e-6_f32
+}
+
+/// Simple ISA-ish density model (troposphere-ish).
+///
+/// This is not a full ISA implementation; it’s a stable, cheap density estimate.
+/// We quantize outputs for cross-platform stability.
+///
+/// Valid-ish up to ~11 km in the “standard” profile.
+#[derive(Copy, Clone, Debug)]
 pub struct ISA {
-    pub rho0: f32, // 1.225 kg/m^3
-    pub T0: f32,   // 288.15 K
-    pub L: f32,    // 0.0065 K/m
-    pub R: f32,    // 287.05 J/(kg*K)
-    pub g: f32,    // 9.80665 m/s^2
+    pub rho0: f32, // kg/m^3
+    pub t0:  f32,  // K
+    pub l:   f32,  // K/m
+    pub r:   f32,  // J/(kg*K)
+    pub g:   f32,  // m/s^2
 }
 
 impl Default for ISA {
     fn default() -> Self {
-        Self { rho0: 1.225, T0: 288.15, L: 0.0065, R: 287.05, g: 9.80665 }
+        Self { rho0: 1.225, t0: 288.15, l: 0.0065, r: 287.05, g: 9.80665 }
     }
 }
 
 impl ISA {
-    // valid up to ~11 km
+    /// Air density at altitude (meters).
+    #[inline]
     pub fn density(&self, altitude_m: f32) -> f32 {
-        let a = 1.0 - self.L * altitude_m / self.T0;
-        // ρ = ρ0 * (T/T0)^{(g/(R L) - 1)}
-        let exp = self.g / (self.R * self.L) - 1.0; // ≈ 4.25588
-        self.rho0 * a.max(0.0).powf(exp)
+        let alt = if altitude_m.is_finite() { altitude_m } else { 0.0 };
+
+        // T/T0 = 1 - L*h/T0
+        let a = 1.0 - (self.l * alt / self.t0);
+
+        // exponent ≈ g/(R*L) - 1
+        let exp = (self.g / (self.r * self.l)) - 1.0;
+
+        // powf can drift across platforms; clamp + quantize the result.
+        let base = a.max(0.0);
+        let rho = self.rho0 * base.powf(exp);
+
+        q6(rho.max(0.0))
     }
 }

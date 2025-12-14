@@ -1,36 +1,111 @@
-//! Simple wheeled-vehicle helpers (MVP).
+//! Simple wheeled-vehicle helpers (MVP, deterministic-friendly).
 //!
-//! Defines wheel/suspension parameters, driver input, a `VehicleParams`
-//! and a `VehicleInstance` that can be advanced with `step_with_host`.
-//!
-//! This crate is *world-agnostic*: callers provide three callbacks to
-//! read the chassis pose/velocity and to write back the new velocity.
-//! Terrain comes from `riftphys_terrain::HeightField`.
+//! - World-agnostic: caller supplies callbacks for pose/vel and writing vel.
+//! - Ground is sampled via `GroundSampler` (HeightField adapter included).
+//! - Quantizes dt/inputs/forces to reduce drift and keep cross-run stability.
 
 use glam::{Affine3A, Quat, Vec3 as GVec3};
-use riftphys_core::{BodyId, Scalar, Vec3, Velocity};          // Vec3 is glam::Vec3A alias
-use riftphys_core::types::Vec3 as V3a;                          // explicit alias to Vec3A
+use riftphys_core::{BodyId, Scalar, Vec3, Velocity}; // Vec3 == glam::Vec3A
+
 use riftphys_terrain::HeightField;
+
+/// Quantize to 1e-6 (determinism-friendly).
+#[inline]
+fn q6(x: f32) -> f32 {
+    if x.is_finite() {
+        (x * 1.0e6_f32).round() * 1.0e-6_f32
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn q6v(v: Vec3) -> Vec3 {
+    Vec3::new(q6(v.x), q6(v.y), q6(v.z))
+}
+
+#[inline]
+fn v3a(v: GVec3) -> Vec3 {
+    v.into()
+}
+
+/// Ground sampling abstraction (world-space xz → (height_y, normal_ws)).
+pub trait GroundSampler {
+    /// Returns `(height_y, normal_ws)` for the given world-space XZ.
+    fn sample(&self, wx: f32, wz: f32) -> (f32, Vec3);
+}
+
+/// Direct adapter: assumes HeightField’s local origin corresponds to world origin.
+/// If your HF is in a tile with an origin offset, use `HeightFieldSampler`.
+impl GroundSampler for HeightField {
+    #[inline]
+    fn sample(&self, wx: f32, wz: f32) -> (f32, Vec3) {
+        let y = self.sample_height(wx, wz);
+        let mut n: Vec3 = self.sample_normal(wx, wz).into();
+        n = n.normalize_or_zero();
+        if n.length_squared() < 1.0e-12 {
+            n = Vec3::Y;
+        }
+        (q6(y), q6v(n))
+    }
+}
+
+/// HeightField wrapper that applies a world→local offset for sampling.
+#[derive(Copy, Clone, Debug)]
+pub struct HeightFieldSampler<'a> {
+    /// HeightField reference.
+    pub hf: &'a HeightField,
+    /// World-space origin of the heightfield’s (0,0) sample in XZ.
+    pub origin_xz: [f32; 2],
+}
+
+impl<'a> HeightFieldSampler<'a> {
+    /// Create a sampler over an existing [`HeightField`].
+    ///
+    /// `origin_xz` is the world-space XZ position that corresponds to the heightfield’s local (0,0).
+    /// The sampler converts world coordinates `(wx, wz)` into heightfield-local coordinates by
+    /// subtracting this origin before sampling height and normal.
+    #[inline]
+    pub fn new(hf: &'a HeightField, origin_xz: [f32; 2]) -> Self {
+        Self { hf, origin_xz }
+    }
+}
+
+
+impl<'a> GroundSampler for HeightFieldSampler<'a> {
+    #[inline]
+    fn sample(&self, wx: f32, wz: f32) -> (f32, Vec3) {
+        let lx = wx - self.origin_xz[0];
+        let lz = wz - self.origin_xz[1];
+        let y = self.hf.sample_height(lx, lz);
+        let mut n: Vec3 = self.hf.sample_normal(lx, lz).into();
+        n = n.normalize_or_zero();
+        if n.length_squared() < 1.0e-12 {
+            n = Vec3::Y;
+        }
+        (q6(y), q6v(n))
+    }
+}
 
 /// Wheel geometry and suspension / tire parameters.
 #[derive(Copy, Clone, Debug)]
 pub struct WheelParams {
     /// Wheel attach point in chassis space.
     pub local_pos: Vec3,
-    /// Suspension/down axis in chassis space (e.g., -Y).
-    pub susp_dir:  Vec3,
+    /// Suspension axis in chassis space (typically -Y).
+    pub susp_dir: Vec3,
     /// Suspension rest length (m).
-    pub rest_len:  f32,
+    pub rest_len: f32,
     /// Spring rate (N/m) along `susp_dir`.
     pub k_spring: f32,
     /// Damping (N·s/m) along `susp_dir`.
-    pub k_damp:   f32,
+    pub k_damp: f32,
     /// Wheel radius (m).
-    pub radius:   f32,
+    pub radius: f32,
     /// Longitudinal friction coefficient.
-    pub mu_long:  f32,
+    pub mu_long: f32,
     /// Lateral friction coefficient.
-    pub mu_lat:   f32,
+    pub mu_lat: f32,
 }
 
 /// Driver input for a vehicle tick.
@@ -38,8 +113,8 @@ pub struct WheelParams {
 pub struct AxleInput {
     /// Throttle in [-1, 1] (negative ≈ brake/reverse in this MVP).
     pub throttle01: f32,
-    /// Steering angle (radians, + = steer left around +Y).
-    pub steer_rad:  f32,
+    /// Steering angle (radians, + = steer left around up axis).
+    pub steer_rad: f32,
 }
 
 /// Static vehicle description: chassis body and wheel layout.
@@ -66,139 +141,186 @@ pub struct VehicleInstance {
     pub input: AxleInput,
 }
 
-#[inline]
-fn v3a(v: GVec3) -> V3a { v.into() }
-
 impl VehicleInstance {
     /// Advance one physics tick using world–agnostic callbacks.
     ///
-    /// * `pose_of`  – given a body id, return `(position, rotation)`.
+    /// * `pose_of`  – given a body id, return `(position, rotation)` in world space.
     /// * `vel_of`   – given a body id, return current `Velocity`.
     /// * `set_vel`  – write a new `Velocity` for the body.
-    /// * `hf`       – optional heightfield for wheel contact.
+    /// * `ground`   – optional ground sampler (heightfield, world raycast, etc).
     /// * `dt`       – timestep (seconds).
     pub fn step_with_host<P, V, S>(
         &mut self,
         mut pose_of: P,
         mut vel_of: V,
         mut set_vel: S,
-        hf: Option<&HeightField>,
+        ground: Option<&dyn GroundSampler>,
         dt: Scalar,
     ) where
         P: FnMut(BodyId) -> (GVec3, Quat),
         V: FnMut(BodyId) -> Velocity,
         S: FnMut(BodyId, Velocity),
     {
+        let dt = q6(dt as f32) as Scalar;
+        if dt <= 0.0 {
+            return;
+        }
+
+        // Quantize inputs so host-side float noise doesn’t desync forces.
+        let throttle = q6(self.input.throttle01.clamp(-1.0, 1.0));
+        let steer_in = q6(self.input.steer_rad);
+
+        let mass = q6(self.p.mass_hint.max(1.0));
+        let g_mag = 9.81_f32; // keep stable constant here; world can override later if needed.
+
         let (pos_w, rot_w) = pose_of(self.p.body);
         let pose_aff = Affine3A::from_rotation_translation(rot_w, pos_w);
         let vel = vel_of(self.p.body);
 
         let mut force_sum_w = GVec3::ZERO;
 
-        for i in 0..self.p.wheels.len() {
-            let (hit, _cp, n_core, _pen, f_susp, f_long, f_lat) =
-                self.eval_wheel(i, pose_aff, vel, hf);
+        for wi in 0..self.p.wheels.len() {
+            let is_drive = self.p.drive_map.iter().any(|&k| k == wi);
+            let is_steer = self.p.steer_map.iter().any(|&k| k == wi);
+            let steer = if is_steer { steer_in } else { 0.0 };
+
+            let (hit, n_w, f_susp, f_long, f_lat) =
+                self.eval_wheel(wi, pose_aff, vel, ground, throttle, steer, mass, g_mag);
 
             if !hit {
                 continue;
             }
 
-            // let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
-            // let fwd_w = steer_q * GVec3::X;
-            // let lat_w = steer_q * GVec3::Z;
-            let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
-            let fwd_w = steer_q * GVec3::X;
-            let lat_w = steer_q * GVec3::Z;
+            // Build wheel frame in world:
+            // - chassis forward/right from pose
+            // - optional steering around chassis up axis
+            let up_w = pose_aff.transform_vector3(GVec3::Y).normalize_or_zero();
+            let chassis_fwd = pose_aff.transform_vector3(GVec3::X).normalize_or_zero();
+            let chassis_lat = pose_aff.transform_vector3(GVec3::Z).normalize_or_zero();
 
-            let n_w: GVec3 = n_core.into();
+            let steer_q = if up_w.length_squared() > 1.0e-12 {
+                Quat::from_axis_angle(up_w, steer)
+            } else {
+                Quat::IDENTITY
+            };
+
+            let fwd_w = (steer_q * chassis_fwd).normalize_or_zero();
+            let lat_w = (steer_q * chassis_lat).normalize_or_zero();
+
+            let n_w: GVec3 = n_w.into();
             let f_wheel = n_w * f_susp + fwd_w * f_long + lat_w * f_lat;
-            force_sum_w += f_wheel;
+
+            // Quantize contribution before summing.
+            force_sum_w += GVec3::new(q6(f_wheel.x), q6(f_wheel.y), q6(f_wheel.z));
+
+            // If not a drive wheel, kill longitudinal drive force (still allows suspension + lateral).
+            if !is_drive {
+                // remove the drive portion we just added
+                let f_drive = fwd_w * f_long;
+                force_sum_w -= GVec3::new(q6(f_drive.x), q6(f_drive.y), q6(f_drive.z));
+            }
         }
 
-        if force_sum_w.length_squared() > 0.0 {
-            let mut v = vel;
-            let a = force_sum_w / self.p.mass_hint.max(1.0);
-            v.lin = v.lin + v3a(a) * dt; // integrate linear velocity (MVP)
-            set_vel(self.p.body, v);
+        if force_sum_w.length_squared() <= 0.0 {
+            return;
         }
+
+        let mut v = vel;
+        let a = force_sum_w / mass;
+
+        // Integrate linear velocity (MVP). Quantize output.
+        v.lin = q6v(v.lin + v3a(a) * dt);
+        set_vel(self.p.body, v);
     }
 
-    /// Internal wheel query against a heightfield.
-    /// Returns `(contact?, contact_point_world, normal_world, penetration, f_susp, f_long, f_lat)`.
+    /// Internal wheel query vs ground sampler.
+    /// Returns `(contact?, normal_ws, f_susp, f_long, f_lat)`.
     fn eval_wheel(
         &self,
         idx: usize,
         pose_world: Affine3A,
         vel_world: Velocity,
-        hf: Option<&HeightField>,
-    ) -> (bool, Vec3, Vec3, f32, f32, f32, f32) {
+        ground: Option<&dyn GroundSampler>,
+        throttle: f32,
+        steer_rad: f32,
+        mass: f32,
+        g_mag: f32,
+    ) -> (bool, Vec3, f32, f32, f32) {
         let wp = self.p.wheels[idx];
 
-        // Anchor and suspension axis in world.
-        let p0_w  = pose_world.transform_point3(wp.local_pos.into());
-        let dir_w = pose_world
-            .transform_vector3(wp.susp_dir.into())   // ✅ correct glam API
-            .normalize_or_zero();
-
-
-        let cast_len = wp.rest_len + wp.radius;
-
-        let Some(hf) = hf else {
-            return (false, Vec3::ZERO, Vec3::Y, 0.0, 0.0, 0.0, 0.0);
+        let Some(ground) = ground else {
+            return (false, Vec3::Y, 0.0, 0.0, 0.0);
         };
 
-        // Sample ground directly under the wheel in XZ.
-        let (wx, wz) = (p0_w.x, p0_w.z);
-        let ground_y = hf.sample_height(wx, wz);
-        let n_g: GVec3 = hf.sample_normal(wx, wz);
+        // Anchor in world.
+        let p0_w = pose_world.transform_point3(wp.local_pos.into());
 
-        // Wheel bottom at full extension.
-        let y_bottom = p0_w.y - cast_len;
-        if y_bottom > ground_y {
-            return (false, Vec3::ZERO, Vec3::Y, 0.0, 0.0, 0.0, 0.0);
+        // Suspension axis in world.
+        let mut dir_w = pose_world.transform_vector3(wp.susp_dir.into()).normalize_or_zero();
+        if dir_w.length_squared() < 1.0e-12 {
+            dir_w = -GVec3::Y; // deterministic fallback
         }
 
-        // Compression along suspension axis.
-        let x = (ground_y - y_bottom).clamp(0.0, cast_len);
+        // Cast length along suspension.
+        let cast_len = q6(wp.rest_len.max(0.0) + wp.radius.max(0.0));
 
-        // Relative velocity along suspension axis.
-        let v_anchor = vel_world.lin;              // V3a
-        let v_rel = v_anchor.dot(v3a(dir_w));      // f32
+        // Sample ground beneath wheel (vertical height query).
+        let wx = q6(p0_w.x);
+        let wz = q6(p0_w.z);
+        let (ground_y, mut n_g) = ground.sample(wx, wz);
+        n_g = n_g.normalize_or_zero();
+        if n_g.length_squared() < 1.0e-12 {
+            n_g = Vec3::Y;
+        }
 
-        let f_spring = wp.k_spring * x;
-        let f_damp   = wp.k_damp * v_rel;
-        let f_susp   = f_spring - f_damp;          // along +dir_w
+        // Bottom point at full extension (along suspension axis).
+        let p_bottom = p0_w + dir_w * cast_len;
+        let y_bottom = q6(p_bottom.y);
 
-        // Tire forces (very simple).
-        // let steer = if self.p.steer_map.iter().any(|&k| k == idx) {
-        //     self.input.steer_rad
-        // } else {
-        //     0.0
-        // };
-        let steer_q = Quat::from_axis_angle(GVec3::Y, self.input.steer_rad);
-        let fwd_w: V3a = v3a(steer_q * GVec3::X);
-        let lat_w: V3a = v3a(steer_q * GVec3::Z);
+        // No contact if bottom is above ground.
+        if y_bottom > ground_y {
+            return (false, n_g, 0.0, 0.0, 0.0);
+        }
 
+        // Compression amount (scalar). Quantize.
+        let x = q6((ground_y - y_bottom).clamp(0.0, cast_len));
+
+        // Relative velocity along suspension axis (MVP: chassis linear only).
+        let v_rel = q6(vel_world.lin.dot(v3a(dir_w)));
+
+        let f_spring = q6(wp.k_spring.max(0.0) * x);
+        let f_damp = q6(wp.k_damp.max(0.0) * v_rel);
+        let f_susp = q6(f_spring - f_damp); // along +dir_w
+
+        // Tire frame (world): chassis axes with steering around up axis.
+        let up_w = pose_world.transform_vector3(GVec3::Y).normalize_or_zero();
+        let chassis_fwd = pose_world.transform_vector3(GVec3::X).normalize_or_zero();
+        let chassis_lat = pose_world.transform_vector3(GVec3::Z).normalize_or_zero();
+
+        let steer_q = if up_w.length_squared() > 1.0e-12 {
+            Quat::from_axis_angle(up_w, steer_rad)
+        } else {
+            Quat::IDENTITY
+        };
+
+        let fwd_w: Vec3 = v3a((steer_q * chassis_fwd).normalize_or_zero());
+        let lat_w: Vec3 = v3a((steer_q * chassis_lat).normalize_or_zero());
+
+        // Project chassis linear velocity into tire axes.
         let v = vel_world.lin;
-        let v_long = v.dot(fwd_w);
-        let v_lat  = v.dot(lat_w);
+        let _v_long = q6(v.dot(fwd_w));
+        let v_lat = q6(v.dot(lat_w));
 
-        let g = 9.81_f32;
-        let fmax_long = wp.mu_long * self.p.mass_hint * g;
-        let fmax_lat  = wp.mu_lat  * self.p.mass_hint * g;
+        // Simple friction caps (normal load proxy = m*g).
+        let fmax_long = q6(wp.mu_long.max(0.0) * mass * g_mag);
+        let fmax_lat = q6(wp.mu_lat.max(0.0) * mass * g_mag);
 
-        let mut f_long = (self.input.throttle01 * fmax_long).clamp(-fmax_long, fmax_long);
-        // super-MVP lateral “cornering spring”
-        let mut f_lat = (-v_lat * self.p.mass_hint).clamp(-fmax_lat, fmax_lat);
+        // Longitudinal: throttle * cap (drive map applied by caller).
+        let f_long = q6((throttle * fmax_long).clamp(-fmax_long, fmax_long));
 
-        (
-            true,
-            Vec3::new( wx, ground_y, wz ),
-            v3a(n_g),          // convert to core Vec3 (Vec3A)
-            x,
-            f_susp,
-            f_long,
-            f_lat,
-        )
+        // Lateral: super-MVP cornering spring; oppose lateral velocity.
+        let f_lat = q6((-v_lat * mass).clamp(-fmax_lat, fmax_lat));
+
+        (true, n_g, f_susp, f_long, f_lat)
     }
 }

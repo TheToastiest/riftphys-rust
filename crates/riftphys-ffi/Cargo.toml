@@ -1,13 +1,14 @@
 [package]
 name = "riftphys_ffi"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-riftphys-world = { path = "../riftphys-world" }
-riftphys-core  = { path = "../riftphys-core" }
-riftphys-geom  = { path = "../riftphys-geom" }
-anyhow         = "1"
+riftphys-world     = { path = "../riftphys-world" }
+riftphys-core      = { path = "../riftphys-core" }
+riftphys-geom      = { path = "../riftphys-geom" }
+riftphys-materials = { path = "../riftphys-materials" }

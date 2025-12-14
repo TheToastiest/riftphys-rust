@@ -740,6 +740,7 @@ checksum = "9e05e7e6723e3455f4818c7b26e855439f7546cf617ef669d1adedb8669e5cb9"
 dependencies = [
  "bytemuck",
  "libm",
+ "serde",
 ]
 
 [[package]]
@@ -1832,7 +1833,6 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "riftphys-acceleration"
 version = "0.1.0"
 dependencies = [
- "glam",
  "riftphys-core",
 ]
 
@@ -1885,7 +1885,7 @@ dependencies = [
  "riftphys-io",
  "riftphys-locomotion",
  "riftphys-materials",
- "riftphys-melee",
+ "riftphys-query",
  "riftphys-riftnet",
  "riftphys-terrain",
  "riftphys-vehicles",
@@ -1946,7 +1946,6 @@ dependencies = [
 name = "riftphys-geom"
 version = "0.2.0"
 dependencies = [
- "glam",
  "riftphys-core",
  "riftphys-materials",
  "serde",
@@ -1971,6 +1970,7 @@ dependencies = [
  "riftphys-articulation",
  "riftphys-core",
  "riftphys-geom",
+ "riftphys-materials",
  "riftphys-world",
  "serde",
  "serde_json",
@@ -1986,9 +1986,12 @@ dependencies = [
 [[package]]
 name = "riftphys-materials"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
-name = "riftphys-melee"
+name = "riftphys-query"
 version = "0.1.0"
 dependencies = [
  "riftphys-core",
@@ -2018,10 +2021,11 @@ dependencies = [
 
 [[package]]
 name = "riftphys-terrain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "glam",
  "image",
+ "riftphys-core",
 ]
 
 [[package]]
@@ -2092,7 +2096,7 @@ dependencies = [
  "riftphys-geom",
  "riftphys-gravity",
  "riftphys-materials",
- "riftphys-melee",
+ "riftphys-query",
  "riftphys-terrain",
  "riftphys-vehicles",
  "riftphys-viz",
@@ -2100,11 +2104,11 @@ dependencies = [
 
 [[package]]
 name = "riftphys_ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
- "anyhow",
  "riftphys-core",
  "riftphys-geom",
+ "riftphys-materials",
  "riftphys-world",
 ]
 

@@ -14,7 +14,9 @@ use riftphys_vox::gpu_wgpu::{GpuRaycaster, HitGpu};
 // World + models
 use riftphys_world::{world};
 use riftphys_core::{iso, quat_identity, vec3, BodyId, Velocity};
-use riftphys_geom::{Material, MassProps, Shape};
+use riftphys_geom::{MassProps, Shape};
+use riftphys_materials::materials::*;
+
 use riftphys_gravity::GravitySpec;
 use riftphys_viz::DebugSettings;
 use riftphys_aero::{CombinedAero, FlatPlateDrag, ISA, SimpleWing};
@@ -85,7 +87,7 @@ struct Args {
 pub fn paint_slab(
     ch: &mut VoxelChunk,
     z0: u32, z1: u32,
-    mat: riftphys_materials::MaterialId
+    mat: riftphys_materials::materials::MaterialId
 ){
     for z in z0..z1 {
         for y in 0..ch.dims.y {
@@ -109,7 +111,7 @@ fn percentile(mut xs: Vec<f64>, p: f64) -> f64 {
     xs[rank.min(n - 1)]
 }
 
-use riftphys_materials::MaterialId as MID;
+use riftphys_materials::materials::MaterialId as MID;
 
 fn fill_chunk(ch: &mut VoxelChunk) -> usize {
     let c = Vec3::new(ch.dims.x as f32 * 0.5, ch.dims.y as f32 * 0.5, ch.dims.z as f32 * 0.5);
@@ -195,7 +197,7 @@ fn build_world(args: &Args) -> Scene {
     });
 
     // Ground: wide flat box, top at y=0
-    let mut mat_ground = Material::default();
+    let mut mat_ground = material(MaterialId::Default);
     mat_ground.restitution = 0.0;
     mat_ground.mu_s = 1.2;
     mat_ground.mu_k = 1.0;
@@ -217,7 +219,7 @@ fn build_world(args: &Args) -> Scene {
     );
 
     // Capsule (dynamic)
-    let mut mat_dyn = Material::default();
+    let mut mat_dyn = material(MaterialId::Default);
     mat_dyn.restitution = 0.0;
     mat_dyn.mu_s = 1.0;
     mat_dyn.mu_k = 0.9;
@@ -225,9 +227,10 @@ fn build_world(args: &Args) -> Scene {
     let c_body = w.add_body(
         iso(vec3(0.0, args.cap_start_y, 0.0), quat_identity()),
         Velocity::default(),
-        MassProps::from_capsule(args.cap_r, args.cap_hh, args.cap_mass),
+        MassProps::from_capsule(args.cap_r, args.cap_hh, MaterialId::Default),
         true,
     );
+
     w.add_collider(
         c_body,
         Shape::Capsule {

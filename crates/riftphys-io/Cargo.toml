@@ -2,37 +2,22 @@
 name = "riftphys-io"
 version = "0.1.0"
 edition = "2021"
-description = "Content I/O tools for RiftPhys (deterministic rig import & hashing)."
-license = "MIT OR Apache-2.0"
 
-[lib]
-name = "riftphys_io"
-path = "src/lib.rs"
-
-[[bin]]
-name = "rig_hash"
-path = "src/bin/rig_hash.rs"
-[[bin]]
-name = "rig_diff"
-path = "src/bin/rig_diff.rs"
-[[bin]]
-name="rig_make"
-path="src/bin/rig_make.rs"
-[[bin]]
-name="rig_names"
-path="src/bin/rig_names.rs"
 [dependencies]
-anyhow = "1.0"
-blake3 = "1.5"
-clap = { version = "4.5", features = ["derive"] }
-glam = { workspace = true }
-gltf = "1.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-riftphys-geom = { path = "../riftphys-geom"}
-riftphys-core = { path = "../riftphys-core"}
-riftphys-world = { path = "../riftphys-world"}
-riftphys-articulation = { path = "../riftphys-articulation"}
+anyhow = "1"
+blake3 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gltf = "1"
 
-# If you don't manage glam in the workspace, swap the glam line for:
-# glam = "0.25"
+# For rig_physics module
+glam = { workspace = true }
+riftphys-core = { path = "../riftphys-core" }
+riftphys-geom = { path = "../riftphys-geom" }
+riftphys-world = { path = "../riftphys-world" }
+riftphys-articulation = { path = "../riftphys-articulation" }
+riftphys-materials = { path = "../riftphys-materials" }
+clap = { version = "4.5.23", features = ["derive"] }
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }

@@ -9,7 +9,8 @@ use riftphys_geom::Shape;
 use riftphys_viz::DebugSettings;
 use riftphys_gravity::GravitySpec;
 use riftphys_core::Velocity;
-use riftphys_geom::{Material, MassProps};
+use riftphys_geom::{MassProps};
+use riftphys_materials::materials::*;
 use glam::{UVec2, Vec2};
 use riftphys_terrain::HeightField;
 use riftphys_bench_helpers::bench_loco::loco_tick_with_heading;
@@ -199,7 +200,7 @@ fn build_world(print_every: u32) -> (world::World, riftphys_terrain::HeightField
 
 
     // Ground box at y=0
-    let mut mat_ground = Material::default();
+    let mut mat_ground= material(MaterialId::Default);
     mat_ground.restitution = 0.0;
     mat_ground.mu_s = 1.2;
     mat_ground.mu_k = 1.0;
@@ -236,7 +237,7 @@ fn build_world(print_every: u32) -> (world::World, riftphys_terrain::HeightField
     }
 
     let hf = make_sine_hf(256, 256, 0.5, 0.25, 0.15);
-    w.set_heightfield(hf.clone(), 0.0);
+    // w.set_heightfield(hf.clone(), 0.0);
 
     (w, hf)
 }

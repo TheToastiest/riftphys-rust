@@ -3,7 +3,7 @@ pub mod cpu;
 pub mod gpu_wgpu;
 use bitvec::prelude::*;
 use glam::{UVec3, Vec3};
-use riftphys_materials::MaterialId;
+use riftphys_materials::materials::MaterialId;
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct Ray {

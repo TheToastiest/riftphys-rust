@@ -2,9 +2,16 @@
 name = "riftphys-geom"
 version = "0.2.0"
 edition = "2021"
+rust-version = "1.76"
+
+[features]
+default = []
+serde = ["dep:serde", "riftphys-core/serde"]
+
+# Tripwire only. If someone enables this on geom, we hard-error in lib.rs.
+glam-fast-math = []
 
 [dependencies]
 riftphys-core = { path = "../riftphys-core" }
 riftphys-materials = { path = "../riftphys-materials" }
-glam = { workspace = true }
-serde = { workspace = true, optional = true }
+serde = { workspace = true, optional = true, features = ["derive"] }

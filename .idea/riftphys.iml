@@ -13,7 +13,6 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-geom/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-gravity/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-materials/src" isTestSource="false" />
-      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-melee/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-terrain/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-vehicles/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-viz/src" isTestSource="false" />
@@ -26,6 +25,10 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-render/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-riftnet/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/tools/riftphys-vis-tool/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-bench-helpers/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-ffi/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-query/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-world/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />
