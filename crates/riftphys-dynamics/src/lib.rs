@@ -298,6 +298,20 @@ impl Bodies {
     pub fn indices(&self) -> impl ExactSizeIterator<Item = u32> + '_ {
         0..(self.len() as u32)
     }
+    // Deactivates a body
+    pub fn deactivate(&mut self, id: u32) -> bool {
+        let i = id as usize;
+        if i >= self.len() { return false; }
+
+        self.linvel[i] = Vec3::ZERO;
+        self.angvel[i] = Vec3::ZERO;
+
+        self.inv_mass[i] = 0.0;
+        self.dynamic[i] = false;
+        self.inv_inertia_local[i] = Mat3::ZERO;
+
+        true
+    }
 }
 
 impl Default for Bodies {

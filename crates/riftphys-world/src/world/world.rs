@@ -181,6 +181,8 @@ pub struct World {
     pub(super) prov_ccd_hits: u32,
     pub(super) prov_aero_sum: f32,
     pub(super) prov_prop_sum: f32,
+
+    pub(super) alive: Vec<u8>,
 }
 
 impl World {
@@ -278,6 +280,7 @@ impl World {
             prov_ccd_hits: 0,
             prov_aero_sum: 0.0,
             prov_prop_sum: 0.0,
+            alive: vec![0; bodies],
         }
     }
 
@@ -378,12 +381,16 @@ impl World {
     pub fn add_body(&mut self, pose: Isometry, vel: Velocity, mass: MassProps, dynamic: bool) -> BodyId {
         let inv_mass = if dynamic { mass.inv_mass } else { 0.0 };
         let id = self.bodies.add(BodyDesc { pose, vel, inv_mass, dynamic });
+        let idx = id as usize;
+        if self.alive.len() <= idx { self.alive.resize(idx + 1, 0); }
+        self.alive[idx] = 1;
 
         if self.accel_comps.len() <= id as usize {
             self.accel_comps.resize(id as usize + 1, None);
         }
 
         BodyId(id)
+
     }
 
     pub fn add_collider(
@@ -504,7 +511,33 @@ impl World {
     pub fn set_body_vel(&mut self, id: BodyId, vel: Velocity) { self.bodies.set_vel(id.0, vel); }
     pub fn apply_impulse(&mut self, id: BodyId, impulse: Vec3) { self.bodies.apply_impulse(id.0, impulse); }
 
-    pub fn remove_body(&mut self, _id: BodyId) -> bool { false }
+    pub fn body_alive(&self, id: BodyId) -> bool {
+        self.alive.get(id.0 as usize).copied().unwrap_or(0) != 0
+    }
+
+    pub fn remove_body(&mut self, id: BodyId) -> bool {
+        let i = id.0 as usize;
+        if i >= self.bodies.len() { return false; }
+        if !self.body_alive(id) { return false; }
+
+        self.alive[i] = 0;
+
+        // stop sim
+        let _ = self.bodies.deactivate(id.0);
+
+        // remove colliders immediately so queries stop hitting it
+        self.colliders.retain(|c| c.body != id);
+
+        // clean aux state
+        if i < self.accel_comps.len() { self.accel_comps[i] = None; }
+        if i < self.last_normal_impulse.len() { self.last_normal_impulse[i] = 0.0; }
+
+        self.guards.retain(|g| g.eff != id);
+        self.balances.retain(|b| b.pelvis != id && b.left != id && b.right != id);
+
+        self.warm_cache.clear();
+        true
+    }
 
     #[inline]
     pub fn normal_force(&self, body: BodyId, dt: f32) -> f32 {

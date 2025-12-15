@@ -5,6 +5,9 @@ use riftphys_viz::LedgerEvent;
 
 use std::collections::BTreeMap;
 
+const TERRAIN_CI: usize = u32::MAX as usize; // 0xFFFF_FFFF
+const TERRAIN_LEDGER_B: u32 = u32::MAX;      // ledger-only sentinel for "terrain body"
+
 impl World {
     pub(super) fn solve_contacts(&mut self, contacts: &[Contact]) {
         let iterations = 12;
@@ -28,12 +31,21 @@ impl World {
 
         for it in 0..iterations {
             for (idx, c) in contacts.iter().enumerate() {
+                // Terrain contacts use TERRAIN_CI as collider-index sentinel on the B side.
+                // A side must always be a real collider index.
                 let ai = self.colliders[c.a_collider].body.0;
-                let bi = self.colliders[c.b_collider].body.0;
-                if ai == bi { continue; }
+
+                let b_is_terrain = c.b_collider == TERRAIN_CI;
+                let bi = if b_is_terrain {
+                    0u32 // dummy; never used to index bodies
+                } else {
+                    self.colliders[c.b_collider].body.0
+                };
+
+                if !b_is_terrain && ai == bi { continue; }
 
                 let inv_a = self.bodies.inv_mass_of(ai);
-                let inv_b = self.bodies.inv_mass_of(bi);
+                let inv_b = if b_is_terrain { 0.0 } else { self.bodies.inv_mass_of(bi) };
                 if inv_a + inv_b == 0.0 { continue; }
 
                 // Warmstart only on first iteration
@@ -43,35 +55,51 @@ impl World {
                         let n = c.normal;
                         let (t1, t2) = orthonormal_basis(n);
                         let imp = n * w.jn + t1 * w.jt1 + t2 * w.jt2;
+
                         self.bodies.apply_impulse(ai, -imp);
-                        self.bodies.apply_impulse(bi,  imp);
+                        if !b_is_terrain {
+                            self.bodies.apply_impulse(bi, imp);
+                        }
                     }
                 }
 
                 // Effective pair properties (order-independent)
                 let ma = self.colliders[c.a_collider].material;
-                let mb = self.colliders[c.b_collider].material;
-                let pair = mats::pair_props(ma.id, mb.id);
-
+                let mb_id = if b_is_terrain {
+                    mats::MaterialId::Default
+                } else {
+                    self.colliders[c.b_collider].material.id
+                };
+                let pair = mats::pair_props(ma.id, mb_id);
                 let restitution = pair.restitution;
 
                 let va = self.bodies.vel(ai);
-                let vb = self.bodies.vel(bi);
-                let n  = c.normal;
-                let rel_v_n = (vb.lin - va.lin).dot(n);
+                let vb_lin = if b_is_terrain { riftphys_core::Vec3::ZERO } else { self.bodies.vel(bi).lin };
+                let n = c.normal;
+
+                let rel_v_n = (vb_lin - va.lin).dot(n);
 
                 // Normal impulse
                 let mut jn = 0.0;
                 if rel_v_n < 0.0 {
                     jn = -(1.0 + restitution) * rel_v_n / (inv_a + inv_b);
                     let imp_n = n * jn;
+
                     self.bodies.apply_impulse(ai, -imp_n);
-                    self.bodies.apply_impulse(bi,  imp_n);
+                    if !b_is_terrain {
+                        self.bodies.apply_impulse(bi, imp_n);
+                    }
 
                     self.last_normal_impulse[ai as usize] += jn.max(0.0);
-                    self.last_normal_impulse[bi as usize] += jn.max(0.0);
+                    if !b_is_terrain {
+                        self.last_normal_impulse[bi as usize] += jn.max(0.0);
+                    }
 
-                    self.record(LedgerEvent::ImpulseN { a: ai, b: bi, jn });
+                    self.record(LedgerEvent::ImpulseN {
+                        a: ai,
+                        b: if b_is_terrain { TERRAIN_LEDGER_B } else { bi },
+                        jn,
+                    });
                 }
                 next_warms[idx].jn = jn;
 
@@ -80,16 +108,25 @@ impl World {
                 if corr > 0.0 {
                     let denom = inv_a + inv_b;
                     let corr_vec = n * (corr / denom);
+
                     self.bodies.apply_position_delta(ai, -corr_vec * inv_a);
-                    self.bodies.apply_position_delta(bi,  corr_vec * inv_b);
-                    self.record(LedgerEvent::PosCorr { a: ai, b: bi, corr });
+                    if !b_is_terrain {
+                        self.bodies.apply_position_delta(bi, corr_vec * inv_b);
+                    }
+
+                    self.record(LedgerEvent::PosCorr {
+                        a: ai,
+                        b: if b_is_terrain { TERRAIN_LEDGER_B } else { bi },
+                        corr,
+                    });
                 }
 
                 // Friction
                 if jn > 0.0 || c.depth > slop {
                     let va2 = self.bodies.vel(ai);
-                    let vb2 = self.bodies.vel(bi);
-                    let vrel = vb2.lin - va2.lin;
+                    let vb2_lin = if b_is_terrain { riftphys_core::Vec3::ZERO } else { self.bodies.vel(bi).lin };
+                    let vrel = vb2_lin - va2.lin;
+
                     let v_n = n * vrel.dot(n);
                     let v_t = vrel - v_n;
 
@@ -105,12 +142,15 @@ impl World {
 
                         let vt_mag = v_t.length();
                         let mu_k_eff = mats::mu_dynamic(&pair, vt_mag);
-                        let jt_max_static = pair.mu_s * jn;
 
-                        let (jt1, jt2) = if jt_des_len <= jt_max_static || jn == 0.0 {
+                        // Static cone uses last normal impulse if jn==0 (resting contact)
+                        let jn_for_limit = if jn > 0.0 { jn } else { (corr / beta).max(0.0) }; // deterministic-ish fallback
+                        let jt_max_static = pair.mu_s * jn_for_limit;
+
+                        let (jt1, jt2) = if jt_des_len <= jt_max_static || jn_for_limit == 0.0 {
                             (jt1_des, jt2_des)
                         } else {
-                            let jt_max_kin = mu_k_eff * jn;
+                            let jt_max_kin = mu_k_eff * jn_for_limit;
                             let scale = if jt_des_len > 1.0e-9 { jt_max_kin / jt_des_len } else { 0.0 };
                             (jt1_des * scale, jt2_des * scale)
                         };
@@ -119,16 +159,25 @@ impl World {
                         next_warms[idx].jt2 = jt2;
 
                         let jt_vec = t1 * jt1 + t2 * jt2;
+
                         self.bodies.apply_impulse(ai, -jt_vec);
-                        self.bodies.apply_impulse(bi,  jt_vec);
-                        self.record(LedgerEvent::ImpulseT { a: ai, b: bi, jt1, jt2 });
+                        if !b_is_terrain {
+                            self.bodies.apply_impulse(bi, jt_vec);
+                        }
+
+                        self.record(LedgerEvent::ImpulseT {
+                            a: ai,
+                            b: if b_is_terrain { TERRAIN_LEDGER_B } else { bi },
+                            jt1,
+                            jt2,
+                        });
                     }
                 }
             }
         }
 
         // write warmstart cache for next tick
-        let mut new_cache: BTreeMap<(u32,u32), WarmImp> = BTreeMap::new();
+        let mut new_cache: BTreeMap<(u32, u32), WarmImp> = BTreeMap::new();
         for (idx, c) in contacts.iter().enumerate() {
             let key = if c.a_collider <= c.b_collider {
                 (c.a_collider as u32, c.b_collider as u32)

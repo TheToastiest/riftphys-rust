@@ -6,4 +6,4 @@ rust-version = "1.76"
 
 [dependencies]
 riftphys-core = { path = "../riftphys-core" }
-glam = "0.27.0"
+glam   = { workspace = true, default-features = false, features = ["std"] }

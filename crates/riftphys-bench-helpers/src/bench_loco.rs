@@ -77,9 +77,9 @@ pub fn loco_tick(world: &mut World,
     // Optional: nudge pelvis forward a touch so CoM remains between feet (keeps Balance happy)
     {
         let id = riftphys_core::BodyId(pelvis);
-        let mut v = world.get_body_vel(id);
+        let _v = world.get_body_vel(id);
         // v.lin.x += spec.step_len * 1.0 * dt; // tiny forward bias
-        world.set_body_vel(id, v);
+        world.set_body_vel(id, _v);
     }
 
 }
@@ -167,12 +167,12 @@ pub fn loco_tick_with_heading(
     {
         use riftphys_core::BodyId;
         let id = BodyId(pelvis);
-        let mut v = world.get_body_vel(id);
+        let _v = world.get_body_vel(id);
 
         // desired forward speed from gait cadence
         // desired forward speed from cadence
         let period = (spec.stance_dur + spec.swing_dur).max(1e-6);
-        let v_forward = (left_len.max(right_len) / period);
+        let v_forward = left_len.max(right_len) / period;
 
         // world forward along heading
         let fwd = vec3(h.x, 0.0, h.z);

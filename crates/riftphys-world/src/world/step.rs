@@ -6,6 +6,8 @@ use riftphys_collision::pairs_sap;
 use riftphys_gravity::eval as grav_eval;
 use riftphys_viz::LedgerEvent;
 
+const TERRAIN_CI: usize = u32::MAX as usize; // 0xFFFF_FFFF
+
 impl World {
     pub fn step(&mut self, dt: Scalar) -> StepStats {
         self.schedule.clear();
@@ -155,6 +157,9 @@ impl World {
             self.record(LedgerEvent::Integrate { id: i, a: a_total, dv: a_total * dt });
             self.bodies.set_pose(i, riftphys_core::Isometry { pos: new_pos, rot: pose.rot });
         }
+        // --- Terrain constraint (collision) ---
+        // Must happen BEFORE UpdateAabbsPre so AABBs reflect the corrected pose.
+        self.resolve_terrain_penetrations(dt);
 
         // Update AABBs (pre)
         self.schedule.push(StepStage::UpdateAabbsPre);
@@ -184,6 +189,7 @@ impl World {
             if let Some(c) = self.contact_sphere_box(i, j)    { contacts.push(c); continue; }
             if let Some(c) = self.contact_capsule_box(i, j)   { contacts.push(c); continue; }
         }
+        self.append_terrain_contacts(&mut contacts);
 
         // Deterministic cull: keep at most 4 contacts per collider pair
         let axis_code = |n: Vec3| -> u8 {
@@ -342,5 +348,187 @@ impl World {
         }
 
         StepStats { pairs_tested: pairs.len() as u32, contacts: contacts_len, islands: 1 }
+    }
+    fn resolve_terrain_penetrations(&mut self, dt: Scalar) {
+        // No terrain → nothing to do
+        if self.terrain.is_none() { return; }
+
+        let q = 1.0e-6f32; // match your contact quantization scale
+        let count = self.bodies.len() as u32;
+
+        for i in 0..count {
+            if !self.bodies.is_dynamic(i) || self.bodies.inv_mass_of(i) == 0.0 { continue; }
+
+            // Find first collider shape for this body (deterministic because colliders are stable-ordered)
+            let mut shape: Option<Shape> = None;
+            for c in &self.colliders {
+                if c.body.0 == i { shape = Some(c.shape); break; }
+            }
+            let Some(shape) = shape else { continue; };
+
+            let mut pose = self.bodies.pose(i);
+            let mut vel  = self.bodies.vel(i);
+
+            // Returns (depth, normal) where depth > 0 means penetration.
+            let hit = match shape {
+                Shape::Sphere { r } => {
+                    let r = r.abs();
+                    self.terrain_pen_sphere(pose.pos, r)
+                }
+                Shape::Capsule { r, hh } => {
+                    let r  = r.abs();
+                    let hh = hh.abs();
+                    self.terrain_pen_capsule(pose.pos, pose.rot, r, hh)
+                }
+                _ => None, // Skip boxes for now (you don't need them for VS movement)
+            };
+
+            let Some((mut depth, mut n)) = hit else { continue; };
+
+            // Quantize depth + normal to kill ulp jitter (same idea as your contact quantize pass)
+            depth = (depth / q).round() * q;
+
+            let nx = (n.x / q).round() * q;
+            let ny = (n.y / q).round() * q;
+            let nz = (n.z / q).round() * q;
+            let len = (nx*nx + ny*ny + nz*nz).sqrt();
+            n = if len > 1.0e-20 { Vec3::new(nx/len, ny/len, nz/len) } else { Vec3::new(0.0, 1.0, 0.0) };
+
+            if depth <= 0.0 { continue; }
+
+            // Position correction: push the whole body out along terrain normal
+            pose.pos += n * depth;
+
+            // Velocity correction: remove into-ground component
+            let vn = vel.lin.dot(n);
+            if vn < 0.0 {
+                vel.lin -= n * vn;
+            }
+
+            // Optional: simple deterministic ground friction (tiny + stable)
+            // (If you don’t want it, delete this block.)
+            let vt = vel.lin - n * vel.lin.dot(n);
+            let vt_len = vt.length();
+            if vt_len > 1.0e-9 {
+                // “Friction strength” tuned to be small and stable; not Coulomb-perfect, but works.
+                let k = (6.0 * dt).clamp(0.0, 1.0);
+                vel.lin -= vt * k;
+            }
+
+            self.bodies.set_pose(i, pose);
+            self.bodies.set_vel(i, vel);
+        }
+    }
+
+    #[inline]
+    fn terrain_pen_sphere(&mut self, center: Vec3, r: f32) -> Option<(f32, Vec3)> {
+        let (h, n) = self.sample_terrain_height_normal(center.x, center.z)?;
+        let depth = (h + r) - center.y; // >0 => sphere is inside ground
+        if depth > 0.0 { Some((depth, n)) } else { None }
+    }
+
+    #[inline]
+    fn terrain_pen_capsule(&mut self, pos: Vec3, rot: riftphys_core::Quat, r: f32, hh: f32) -> Option<(f32, Vec3)> {
+        // Capsule axis is local +Y (consistent with your aabb_of)
+        let axis_w = rot * Vec3::Y;
+
+        // End sphere centers
+        let tip  = pos + axis_w * hh;
+        let base = pos - axis_w * hh;
+
+        // Sample both ends and take deepest penetration (deterministic tie-break: base wins)
+        let mut best: Option<(f32, Vec3)> = None;
+
+        if let Some((h, n)) = self.sample_terrain_height_normal(base.x, base.z) {
+            let d = (h + r) - base.y;
+            if d > 0.0 { best = Some((d, n)); }
+        }
+
+        if let Some((h, n)) = self.sample_terrain_height_normal(tip.x, tip.z) {
+            let d = (h + r) - tip.y;
+            best = match best {
+                None => if d > 0.0 { Some((d, n)) } else { None },
+                Some((bd, bn)) => {
+                    if d > bd { Some((d, n)) } else { Some((bd, bn)) }
+                }
+            };
+        }
+
+        best
+    }
+    fn append_terrain_contacts(&mut self, contacts: &mut Vec<Contact>) {
+        if self.terrain.is_none() { return; }
+
+        let count = self.bodies.len() as usize;
+
+        // primary collider per body (first collider wins; deterministic)
+        let mut primary_ci: Vec<Option<usize>> = vec![None; count];
+        for (ci, c) in self.colliders.iter().enumerate() {
+            let bi = c.body.0 as usize;
+            if bi < count && primary_ci[bi].is_none() {
+                primary_ci[bi] = Some(ci);
+            }
+        }
+
+        for bi in 0..count {
+            let i = bi as u32;
+            if !self.bodies.is_dynamic(i) || self.bodies.inv_mass_of(i) == 0.0 { continue; }
+
+            let Some(ci) = primary_ci[bi] else { continue; };
+            let shape = self.colliders[ci].shape;
+            let pose  = self.bodies.pose(i);
+
+            match shape {
+                Shape::Sphere { r } => {
+                    let r = r.abs();
+                    if let Some((h, n_up)) = self.sample_terrain_height_normal(pose.pos.x, pose.pos.z) {
+                        let depth = (h + r) - pose.pos.y;
+                        if depth > 0.0 {
+                            contacts.push(Contact {
+                                a_collider: ci,
+                                b_collider: TERRAIN_CI,
+                                normal: -n_up, // IMPORTANT: A->B points downward so solver pushes A upward
+                                depth,
+                            });
+                        }
+                    }
+                }
+
+                Shape::Capsule { r, hh } => {
+                    let r  = r.abs();
+                    let hh = hh.abs();
+
+                    let axis_w = pose.rot * Vec3::Y;
+                    let tip    = pose.pos + axis_w * hh;
+                    let base   = pose.pos - axis_w * hh;
+
+                    // deepest end wins; base wins ties (deterministic)
+                    let mut best: Option<(f32, Vec3)> = None;
+
+                    if let Some((h, n_up)) = self.sample_terrain_height_normal(base.x, base.z) {
+                        let d = (h + r) - base.y;
+                        if d > 0.0 { best = Some((d, n_up)); }
+                    }
+                    if let Some((h, n_up)) = self.sample_terrain_height_normal(tip.x, tip.z) {
+                        let d = (h + r) - tip.y;
+                        best = match best {
+                            None => if d > 0.0 { Some((d, n_up)) } else { None },
+                            Some((bd, bn)) => if d > bd { Some((d, n_up)) } else { Some((bd, bn)) },
+                        };
+                    }
+
+                    if let Some((depth, n_up)) = best {
+                        contacts.push(Contact {
+                            a_collider: ci,
+                            b_collider: TERRAIN_CI,
+                            normal: -n_up,
+                            depth,
+                        });
+                    }
+                }
+
+                _ => { /* ignore boxes for now (vertical slice: player/NPC are capsule/sphere) */ }
+            }
+        }
     }
 }

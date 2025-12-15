@@ -30,6 +30,10 @@ typedef uint32_t RPhysResult;
 // 0 is reserved invalid / none.
 #define RPHYS_INVALID_BODY_ID 0u
 
+// Reserved hit object id for terrain in query results.
+// This is NOT a body id and must be rejected by body APIs.
+#define RPHYS_TERRAIN_BODY_ID 0xFFFFFFFFu
+
 // Optional: TLS error message (valid until next API call that sets it on the same thread)
 const char* rphys_last_error_message(void);
 
@@ -68,17 +72,17 @@ typedef struct RPhysCapsuleBodyDesc {
     RPhysVelocity vel;
     float radius;
     float half_height;
-    float mass;            // ABI kept; currently ignored by Rust impl
+    float mass;            // ABI kept; may be ignored by impl
     RPhysBodyType body_type;
     RPhysMaterial material;
-    uint32_t user_tag;     // ABI kept; currently unused by Rust impl
+    uint32_t user_tag;     // ABI kept; may be unused by impl
 } RPhysCapsuleBodyDesc;
 
 typedef struct RPhysBoxBodyDesc {
     RPhysIsometry pose;
     RPhysVelocity vel;
     float hx, hy, hz;
-    float mass;            // ABI kept; currently ignored by Rust impl
+    float mass;            // ABI kept; may be ignored by impl
     RPhysBodyType body_type;
     RPhysMaterial material;
     uint32_t user_tag;
@@ -88,7 +92,7 @@ typedef struct RPhysSphereBodyDesc {
     RPhysIsometry pose;
     RPhysVelocity vel;
     float radius;
-    float mass;            // ABI kept; currently ignored by Rust impl
+    float mass;            // ABI kept; may be ignored by impl
     RPhysBodyType body_type;
     RPhysMaterial material;
     uint32_t user_tag;
@@ -107,23 +111,23 @@ typedef struct RPhysHash32 {
 typedef struct RPhysStepParams {
     uint32_t size_bytes;   // must be set by caller = sizeof(RPhysStepParams)
     uint32_t flags;        // reserved
-    uint32_t substeps;     // 1 = normal
-    uint32_t solver_iters; // 0 = engine default (currently ignored by FFI wrapper)
-    float    dt;
+    uint32_t substeps;     // must be > 0
+    uint32_t solver_iters; // 0 = engine default (may be ignored by impl)
+    float    dt;           // must be finite (and ideally >= 0)
 } RPhysStepParams;
 
 /* ===================== QUERIES ===================== */
 
 typedef struct RPhysRayQuery {
     RPhysVec3 origin;
-    RPhysVec3 dir;
-    float max_distance;
-    uint32_t ignore_body;  // 1-based; 0 = none
+    RPhysVec3 dir;          // does not need to be normalized; zero is allowed (miss)
+    float max_distance;     // impl may clamp <0 to 0
+    uint32_t ignore_body;   // 1-based; 0 = none; terrain sentinel is invalid here
 } RPhysRayQuery;
 
 typedef struct RPhysRayHit {
     RPhysBool hit;
-    uint32_t  body_id;     // 1-based; 0 = none
+    uint32_t  body_id;      // 1-based; 0 = none; may be RPHYS_TERRAIN_BODY_ID for terrain
     float     fraction;
     RPhysVec3 point;
     RPhysVec3 normal;
@@ -134,17 +138,50 @@ typedef struct RPhysCapsuleSweepQuery {
     RPhysVec3 to;
     float radius;
     float half_height;
-    uint32_t ignore_body;  // 1-based; 0 = none
+    uint32_t ignore_body;   // 1-based; 0 = none; terrain sentinel is invalid here
 } RPhysCapsuleSweepQuery;
 
 typedef struct RPhysCapsuleSweepHit {
     RPhysBool hit;
-    uint32_t  body_id;     // 1-based; 0 = none
+    uint32_t  body_id;      // 1-based; 0 = none; may be RPHYS_TERRAIN_BODY_ID for terrain
     float     fraction;
     RPhysBool started_overlapping;
     RPhysVec3 point;
     RPhysVec3 normal;
 } RPhysCapsuleSweepHit;
+
+/* ===================== HEIGHTFIELD ===================== */
+
+typedef struct RPhysHeightfieldDesc {
+    uint32_t size_bytes;      // must be set by caller = sizeof(RPhysHeightfieldDesc)
+    uint32_t flags;           // reserved (0)
+    uint32_t width;           // samples in X
+    uint32_t height;          // samples in Z
+    uint32_t row_stride;      // 0 = width
+    float    cell_size_x;     // world units between samples (X)
+    float    cell_size_z;     // world units between samples (Z)
+    float    height_scale;    // world units per i16 unit
+    float    height_offset;   // world units bias
+    const int16_t* heights;   // row-major, length >= row_stride*height
+} RPhysHeightfieldDesc;
+
+RPhysResult rphys_world_set_heightfield_i16(
+    RPhysWorld* world,
+    const RPhysHeightfieldDesc* hf,
+    float origin_x, float origin_z,
+    float y_offset);
+
+RPhysResult rphys_world_set_heightfield_raw32_square(
+    RPhysWorld* world,
+    const uint8_t* bytes,
+    uint32_t bytes_len,
+    float world_size_x,
+    float world_size_z,
+    float origin_x,
+    float origin_z,
+    float y_offset);
+
+RPhysResult rphys_world_clear_heightfield(RPhysWorld* world);
 
 /* ===================== API ===================== */
 
@@ -180,6 +217,9 @@ RPhysResult  rphys_world_step_and_hash(RPhysWorld* world, float dt, RPhysHash32*
 // queries (always write a deterministic miss to out_* when possible)
 RPhysResult  rphys_world_raycast(const RPhysWorld* world, const RPhysRayQuery* query, RPhysRayHit* out_hit);
 RPhysResult  rphys_world_capsule_sweep(const RPhysWorld* world, const RPhysCapsuleSweepQuery* query, RPhysCapsuleSweepHit* out_hit);
+
+// Last Error Copy
+RPhysResult rphys_last_error_copy(char* dst, uint32_t cap, uint32_t* out_len);
 
 #ifdef __cplusplus
 }

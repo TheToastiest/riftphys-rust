@@ -12,3 +12,5 @@ riftphys-world     = { path = "../riftphys-world" }
 riftphys-core      = { path = "../riftphys-core" }
 riftphys-geom      = { path = "../riftphys-geom" }
 riftphys-materials = { path = "../riftphys-materials" }
+riftphys-terrain = { path = "../riftphys-terrain" }
+glam   = { workspace = true, default-features = false, features = ["std"] }

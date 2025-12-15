@@ -40,7 +40,54 @@ impl HeightField {
 
         Self { dims, cell, heights, min_y, max_y }
     }
+    pub fn from_i16_grid_strided(
+        width: u32,
+        height: u32,
+        stride: u32,
+        cell: Vec2,
+        heights_i16: &[i16],
+        height_scale: f32,
+        height_offset: f32,
+    ) -> Result<Self, String> {
+        if width == 0 || height == 0 {
+            return Err("HeightField::from_i16_grid_strided: width/height == 0".into());
+        }
 
+        let stride = if stride == 0 { width } else { stride };
+        if stride < width {
+            return Err("HeightField::from_i16_grid_strided: stride < width".into());
+        }
+
+        let need = (stride as usize)
+            .checked_mul(height as usize)
+            .ok_or("HeightField::from_i16_grid_strided: stride*height overflow")?;
+
+        if heights_i16.len() < need {
+            return Err(format!(
+                "HeightField::from_i16_grid_strided: heights len {} < needed {}",
+                heights_i16.len(),
+                need
+            ));
+        }
+
+        // sanitize scale/offset deterministically
+        let hs = if height_scale.is_finite() { height_scale } else { 0.0 };
+        let ho = if height_offset.is_finite() { height_offset } else { 0.0 };
+
+        // Convert to contiguous Vec<f32> of len width*height (no padding)
+        let mut heights = Vec::<f32>::with_capacity((width as usize) * (height as usize));
+        for z in 0..(height as usize) {
+            let row = z * (stride as usize);
+            for x in 0..(width as usize) {
+                let s = heights_i16[row + x] as f32;
+                let h = s * hs + ho;
+                // from_heights() will sanitize + q6 quantize deterministically
+                heights.push(h);
+            }
+        }
+
+        Ok(Self::from_heights(UVec2::new(width, height), cell, heights))
+    }
     #[cfg(feature = "image")]
     pub fn from_png_bytes(png: &[u8], cell: Vec2, y_scale: f32) -> image::ImageResult<Self> {
         let img = image::load_from_memory(png)?.to_luma8();

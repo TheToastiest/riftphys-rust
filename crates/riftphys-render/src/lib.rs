@@ -142,7 +142,7 @@ pub struct Renderer {
     // common buffers
     cam_buf: wgpu::Buffer,
     cam_bind: wgpu::BindGroup,
-    cam_bgl: wgpu::BindGroupLayout,
+    // cam_bgl: wgpu::BindGroupLayout,
     // unit meshes
     unit_box: Mesh,
     unit_sphere: Mesh,
@@ -317,7 +317,8 @@ impl Renderer {
         Self  {
             surface, device, queue, config, depth: (depth_tex, depth_view),
             mesh_pipe, line_pipe,
-            cam_buf, cam_bind, cam_bgl,
+            cam_buf, cam_bind,
+            // cam_bgl,
             unit_box, unit_sphere, unit_capsule_y, grid_lines,
             camera: Camera::new(),
         }
