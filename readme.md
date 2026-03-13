@@ -1,4 +1,5 @@
 # RiftPhys — Deterministic Physics Core (Phase-20 Public Release)
+# Version 1.0
 
 **RiftPhys** is a data-oriented, deterministic physics stack powering the RiftForged project.  
 This public release captures the Phase 0–20 milestone: determinism contracts, stepper, CCD, basic contact models, controllers (Guard/Balance), terrain sampling, aero/prop scaffolding, vehicles v1, epoch shadowing, rig I/O + hashing, and **Phase-20 contact polish (deterministic culling, quantization, warmstart cache)**.
