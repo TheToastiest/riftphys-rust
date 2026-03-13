@@ -1509,3 +1509,103 @@ fn last_error_copy_truncates_safely_and_reports_full_len() {
         assert_eq!(buf[buf.len() - 1], 0);
     }
 }
+/* ===================== PLAYER CONTROLLER ===================== */
+
+#[test]
+fn player_controller_basic_movement_and_gravity() {
+    unsafe {
+        let w = mk_world();
+
+        let desc = RPhysPlayerDesc {
+            start_pose: mk_identity_iso(0.0, 10.0, 0.0), // Start floating in the air
+            radius: 0.4,
+            height: 1.8,
+            speed: 5.0,
+        };
+
+        let mut p_idx = u32::MAX;
+        assert_eq!(rphys_add_player(w.0, &desc, &mut p_idx), RPHYS_OK, "err={}", last_err());
+        assert_ne!(p_idx, u32::MAX);
+
+        // Feed an input vector pushing the player along the +X axis
+        let move_dir = RPhysVec3 { x: 1.0, y: 0.0, z: 0.0 };
+        assert_eq!(rphys_player_set_input(w.0, p_idx, move_dir), RPHYS_OK, "err={}", last_err());
+
+        // Step the world. The player should fall (gravity) AND move +X (input).
+        for _ in 0..10 {
+            assert_eq!(rphys_world_step(w.0, 1.0 / 60.0), RPHYS_OK, "err={}", last_err());
+        }
+
+        let mut pose_out = mk_identity_iso(0.0, 0.0, 0.0);
+        let mut grounded = RPHYS_TRUE; // Preset to true so we can ensure it gets written to false
+
+        assert_eq!(
+            rphys_player_get_pose(w.0 as *const RPhysWorld, p_idx, &mut pose_out, &mut grounded),
+            RPHYS_OK,
+            "err={}",
+            last_err()
+        );
+
+        // Verify gravity pulled them down
+        assert!(pose_out.pos.y < 10.0, "Player did not fall. Y: {}", pose_out.pos.y);
+
+        // Verify input moved them forward
+        assert!(pose_out.pos.x > 0.0, "Player did not move forward. X: {}", pose_out.pos.x);
+
+        // Verify they know they are in the air
+        assert_eq!(grounded, RPHYS_FALSE, "Player should not be grounded in the air.");
+    }
+}
+
+#[test]
+fn player_controller_hits_heightfield_and_grounds() {
+    unsafe {
+        let w = mk_world();
+
+        // 1. Create a flat ground at Y=0
+        let heights: [i16; 4] = [0, 0, 0, 0];
+        let d = RPhysHeightfieldDesc {
+            size_bytes: std::mem::size_of::<RPhysHeightfieldDesc>() as u32,
+            flags: 0,
+            width: 2,
+            height: 2,
+            row_stride: 0,
+            cell_size_x: 10.0,
+            cell_size_z: 10.0,
+            height_scale: 1.0,
+            height_offset: 0.0,
+            heights: heights.as_ptr(),
+        };
+        assert_eq!(rphys_world_set_heightfield_i16(w.0, &d, 0.0, 0.0, 0.0), RPHYS_OK, "err={}", last_err());
+
+        // 2. Drop the player right above the mesh
+        let desc = RPhysPlayerDesc {
+            start_pose: mk_identity_iso(5.0, 3.0, 5.0),
+            radius: 0.5,
+            height: 2.0, // Extents: 1.0 half-height + 0.5 radius = 1.5 total collision distance to center
+            speed: 5.0,
+        };
+
+        let mut p_idx = u32::MAX;
+        assert_eq!(rphys_add_player(w.0, &desc, &mut p_idx), RPHYS_OK, "err={}", last_err());
+
+        // 3. Step enough frames for gravity to slam the player into the heightfield
+        for _ in 0..60 {
+            assert_eq!(rphys_world_step(w.0, 1.0 / 60.0), RPHYS_OK, "err={}", last_err());
+        }
+
+        // 4. Retrieve pose and ground state
+        let mut pose_out = mk_identity_iso(0.0, 0.0, 0.0);
+        let mut grounded = RPHYS_FALSE;
+        assert_eq!(
+            rphys_player_get_pose(w.0 as *const RPhysWorld, p_idx, &mut pose_out, &mut grounded),
+            RPHYS_OK,
+            "err={}",
+            last_err()
+        );
+
+        // The math: Y should settle right around 1.5 (half-height 1.0 + radius 0.5)
+        assert_eq!(grounded, RPHYS_TRUE, "Player failed to ground on the heightfield!");
+        assert!(pose_out.pos.y > 1.4 && pose_out.pos.y < 1.6, "Player sank into or hovered over ground. Y: {}", pose_out.pos.y);
+    }
+}

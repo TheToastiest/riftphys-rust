@@ -1,6 +1,6 @@
 use riftphys_locomotion::loco_state as loco;
 use riftphys_world::world::World;
-use riftphys_core::{Velocity, vec3};
+use riftphys_core::{Velocity, vec3, BodyId};
 use glam::Vec3;
 
 /// PD -> velocity toward a target position (deterministic, fixed gains)
@@ -11,78 +11,6 @@ fn pd_vel_to_target(cur: Vec3, cur_v: Vec3, tgt: Vec3, kp: f32, kd: f32, vmax: f
     if s > vmax { v * (vmax / s) } else { v }
 }
 
-/// Integrate one tick of “left swings / right stance” minimal gait.
-/// - pelvis, left, right: body indices in the current world.
-/// - spec: gait timings and arc parameters.
-pub fn loco_tick(world: &mut World,
-                 pelvis: u32, left: u32, right: u32,
-                 clocks: &mut (loco::FootClock, loco::FootClock),
-                 spec: &loco::GaitSpec,
-                 dt: f32)
-{
-    // Read current poses
-    let pL = world.get_body_pose(riftphys_core::BodyId(left)).pos.into();
-    let pR = world.get_body_pose(riftphys_core::BodyId(right)).pos.into();
-
-    // Foot phases (advance clocks deterministically)
-    let phaseL = clocks.0.step(dt);
-    let phaseR = clocks.1.step(dt);
-
-    // Stance anchors (keep last stance XZ; Y follows ground via contacts naturally)
-    // For a minimal demo: use current positions as stance references when in stance.
-    // (You can persist anchors across frames if you want exact footprints.)
-    let mut tgtL = pL;
-    let mut tgtR = pR;
-
-    // One-foot swing: left swings while right stances (or vice-versa)
-    match phaseL {
-        loco::Phase::Swing(s) => {
-            tgtL = loco::swing_target(pL,  spec.step_len, spec.step_h, s);
-        }
-        loco::Phase::Stance(_s) => { /* keep tgtL ~ stance point */ }
-    }
-    match phaseR {
-        loco::Phase::Swing(s) => {
-            tgtR = loco::swing_target(pR,  spec.step_len, spec.step_h, s);
-        }
-        loco::Phase::Stance(_s) => { /* keep tgtR ~ stance point */ }
-    }
-
-    // Convert to desired velocities with small, fixed PD gains (deterministic)
-    let kp = 8.0;  // m/s per meter error
-    let kd = 1.6;  // da    mping
-    let vmax = 4.0; // clamp
-
-    // Left foot
-    {
-        let id = riftphys_core::BodyId(left);
-        let curv = world.get_body_vel(id).lin.into();
-        let mut v_des = pd_vel_to_target(pL, curv, tgtL, kp, kd, vmax);
-        if matches!(phaseL, loco::Phase::Stance(_)) { v_des.y = 0.0; }    // plant Y during stance
-        let mut v = world.get_body_vel(id);
-        v.lin = vec3(v_des.x, v_des.y, v_des.z);
-        world.set_body_vel(id, v);
-    }
-    // Right foot
-    {
-        let id = riftphys_core::BodyId(right);
-        let curv = world.get_body_vel(id).lin.into();
-        let mut v_des = pd_vel_to_target(pR, curv, tgtR, kp, kd, vmax);
-        if matches!(phaseR, loco::Phase::Stance(_)) { v_des.y = 0.0; }
-        let mut v = world.get_body_vel(id);
-        v.lin = vec3(v_des.x, v_des.y, v_des.z);
-        world.set_body_vel(id, v);
-    }
-
-    // Optional: nudge pelvis forward a touch so CoM remains between feet (keeps Balance happy)
-    {
-        let id = riftphys_core::BodyId(pelvis);
-        let _v = world.get_body_vel(id);
-        // v.lin.x += spec.step_len * 1.0 * dt; // tiny forward bias
-        world.set_body_vel(id, _v);
-    }
-
-}
 pub fn loco_tick_with_heading(
     world: &mut World,
     pelvis: u32, left: u32, right: u32,
@@ -92,46 +20,59 @@ pub fn loco_tick_with_heading(
     left_len: f32, right_len: f32,
     dt: f32
 ) {
+    // 1. Pelvis Height & Forward Velocity
     {
-        use riftphys_core::BodyId;
-        let id  = BodyId(pelvis);
+        let id = BodyId(pelvis);
         let pos = world.get_body_pose(id).pos;
         let mut vel = world.get_body_vel(id);
 
-        // Choose a target COM height (your initial was ~1.20).
+        // Target COM height
         let y_tgt = 1.20_f32;
 
-        // Simple PD on height (units: velocity, applied incrementally)
-        let kp_y = 12.0; // m/s per m of height error
-        let kd_y = 2.5;  // damping on current vertical speed
+        // BOOSTED PD GAINS: Necessary to pop up from resting radius
+        let kp_y = 40.0;
+        let kd_y = 5.0;
         let v_y_des = (y_tgt - pos.y) * kp_y - vel.lin.y * kd_y;
 
-        // Apply as an incremental “accel-style” velocity change
+        // Desired forward speed from cadence
+        let period = (spec.stance_dur + spec.swing_dur).max(1e-6);
+        let v_forward = left_len.max(right_len) / period;
+        let h = if heading_dir_ws.length_squared() < 1e-12 { Vec3::X } else { heading_dir_ws.normalize() };
+        let v_fwd_des = h * v_forward;
+
         vel.lin.y += v_y_des * dt;
+        vel.lin.x = v_fwd_des.x;
+        vel.lin.z = v_fwd_des.z;
+
         world.set_body_vel(id, vel);
     }
 
-    use riftphys_core::BodyId;
-    use glam::Vec3;
-    // normalize / default heading to +X for safety
-    let mut h = heading_dir_ws;
-    if h.length_squared() < 1.0e-12 { h = Vec3::new(1.0, 0.0, 0.0); } else { h = h.normalize(); }
-
-    let pL = world.get_body_pose(BodyId(left)).pos.into();
-    let pR = world.get_body_pose(BodyId(right)).pos.into();
+    // 2. Foot Controls
+    let idL = BodyId(left);
+    let idR = BodyId(right);
+    let pL: Vec3 = world.get_body_pose(idL).pos.into();
+    let pR: Vec3 = world.get_body_pose(idR).pos.into();
 
     let phaseL = clocks.0.step(dt);
     let phaseR = clocks.1.step(dt);
 
+    let h = if heading_dir_ws.length_squared() < 1e-12 { Vec3::X } else { heading_dir_ws.normalize() };
+
+    // Determine Targets
     let mut tgtL = pL;
     let mut tgtR = pR;
 
     match phaseL {
         loco::Phase::Swing(s) => {
-            tgtL = loco::swing_target_dir(pL, h, left_len,  spec.step_h, s);
+            tgtL = loco::swing_target_dir(pL, h, left_len, spec.step_h, s);
         }
-        _ => {}
+        loco::Phase::Stance(_) => {
+            // DETERMINISTIC FIX: In a real architecture, we'd store a 'stance_anchor'.
+            // For this bench, we ensure the Y velocity is clamped so it doesn't
+            // 'float' away while the pelvis lifts.
+        }
     }
+
     match phaseR {
         loco::Phase::Swing(s) => {
             tgtR = loco::swing_target_dir(pR, h, right_len, spec.step_h, s);
@@ -139,51 +80,97 @@ pub fn loco_tick_with_heading(
         _ => {}
     }
 
-    let kp = 8.0;   // was 6.0
-    let kd = 1.6;   // was 1.2
-    let vmax = 4.0; // was 2.5
+    // Foot PD Gains
+    let kp = 15.0;   // Increased to overcome friction
+    let kd = 2.0;
+    let vmax = 5.0;
 
-    let idL = BodyId(left);
-    let vL  = world.get_body_vel(idL).lin.into();
-    let vdL = pd_vel_to_target(pL, vL, tgtL, kp, kd, vmax);
-    let mut nvL = world.get_body_vel(idL);
-    let mut vdL2 = vdL;
-    if matches!(phaseL, loco::Phase::Stance(_)) { vdL2.y = 0.0; }   // keep planted
-    nvL.lin = vec3(vdL2.x, vdL2.y, vdL2.z);
+    // Apply Left
+    let vL = world.get_body_vel(idL).lin.into();
+    let mut vdL = pd_vel_to_target(pL, vL, tgtL, kp, kd, vmax);
+    if matches!(phaseL, loco::Phase::Stance(_)) { vdL.y = 0.0; }
+    world.set_body_vel(idL, Velocity { lin: vdL.into(), ang: world.get_body_vel(idL).ang });
 
-    world.set_body_vel(idL, nvL);
+    // Apply Right
+    let vR = world.get_body_vel(idR).lin.into();
+    let mut vdR = pd_vel_to_target(pR, vR, tgtR, kp, kd, vmax);
+    if matches!(phaseR, loco::Phase::Stance(_)) { vdR.y = 0.0; }
+    world.set_body_vel(idR, Velocity { lin: vdR.into(), ang: world.get_body_vel(idR).ang });
+}
+// Add PathKind to the helper so MeleeWalker can use it
+pub enum PathKind {
+    Straight { dir_ws: Vec3 },
+    Circle   { center: Vec3, radius: f32, ang_vel: f32, angle: f32 },
+}
 
-    let idR = BodyId(right);
-    let vR  = world.get_body_vel(idR).lin.into();
-    let vdR = pd_vel_to_target(pR, vR, tgtR, kp, kd, vmax);
+pub struct Walker {
+    pub pelvis: BodyId,
+    pub left:   BodyId,
+    pub right:  BodyId,
 
-    let mut nvR = world.get_body_vel(idR);
-    let mut vdR2 = vdR;
-    if matches!(phaseR, loco::Phase::Stance(_)) { vdR2.y = 0.0; }
-    nvR.lin = vec3(vdR2.x, vdR2.y, vdR2.z);
-    world.set_body_vel(idR, nvR);
+    pub state:  loco::LocoState,
+    pub clocks: (loco::FootClock, loco::FootClock),
+    pub gait:   loco::GaitSpec,
+    pub path:   PathKind,
+}
+pub struct MeleeWalker {
+    pub base: Walker,
+    pub weapon_hand: BodyId,
+    pub target_enemy: Option<BodyId>,
+    pub strike_time: f32,
+}
 
-    // same tiny pelvis bias  -> REPLACE with heading-aware speed target
-    {
-        use riftphys_core::BodyId;
-        let id = BodyId(pelvis);
-        let _v = world.get_body_vel(id);
+impl MeleeWalker {
+    pub fn update_combat(&mut self, world: &mut World, dt: f32) {
+        if self.strike_time > 0.0 {
+            // Sinusoidal swing: rapid acceleration then deceleration
+            let swing_force = (self.strike_time * 15.0).cos() * 100.0;
+            let torque = Vec3::new(0.0, swing_force, 0.0);
 
-        // desired forward speed from gait cadence
-        // desired forward speed from cadence
-        let period = (spec.stance_dur + spec.swing_dur).max(1e-6);
-        let v_forward = left_len.max(right_len) / period;
-
-        // world forward along heading
-        let fwd = vec3(h.x, 0.0, h.z);
-        let v_des = fwd * v_forward;
-
-        // hard-set pelvis horizontal velocity (keep Y from balance/contacts)
-        let id = BodyId(pelvis);
-        let mut v = world.get_body_vel(id);
-        v.lin.x = v_des.x;
-        v.lin.z = v_des.z;
-        world.set_body_vel(id, v);
+            world.apply_torque(self.weapon_hand, torque);
+            self.strike_time -= dt;
+        }
     }
+}
 
+// In crates/riftphys-bench-helpers/src/bench_loco.rs
+
+impl Walker {
+    pub fn step(&mut self, world: &mut World, dt: f32) {
+        // 1) Update desired heading
+        match &mut self.path {
+            PathKind::Straight { dir_ws } => {
+                let mut d = *dir_ws;
+                if d.length_squared() < 1.0e-12 { d = Vec3::X; }
+                let d = d.normalize();
+                self.state.heading_yaw_rad = d.z.atan2(d.x);
+            }
+            PathKind::Circle { center, radius, ang_vel, angle } => {
+                *angle += *ang_vel * dt;
+                let r = *radius;
+                let x = center.x + r * angle.cos();
+                let z = center.z + r * angle.sin();
+                let pos = world.get_body_pose(self.pelvis).pos;
+                let to_target = Vec3::new(x - pos.x, 0.0, z - pos.z);
+                let d = if to_target.length_squared() < 1.0e-12 { Vec3::X } else { to_target.normalize() };
+                self.state.heading_yaw_rad = d.z.atan2(d.x);
+            }
+        }
+
+        // 2) Advance clocks and plan
+        let directive = self.state.step_and_plan(dt);
+        let h = self.state.heading_dir();
+
+        let l_len = if directive.left_step_len == 0.0 { self.gait.step_len } else { directive.left_step_len };
+        let r_len = if directive.right_step_len == 0.0 { self.gait.step_len } else { directive.right_step_len };
+
+        // 3) Apply foot placements
+        loco_tick_with_heading(
+            world, self.pelvis.0, self.left.0, self.right.0,
+            &mut self.clocks, &self.gait, h, l_len, r_len, dt,
+        );
+
+        self.state.left_clk = self.clocks.0;
+        self.state.right_clk = self.clocks.1;
+    }
 }

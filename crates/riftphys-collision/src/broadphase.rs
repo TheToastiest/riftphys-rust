@@ -1,59 +1,100 @@
-// riftphys-collision/src/broadphase.rs
+// File: crates/riftphys-collision/src/broadphase.rs
 use riftphys_geom::Aabb;
+use rustc_hash::FxHashMap;
 
-/// Deterministic 1D SAP along X with full AABB overlap, NaN-safe and stable.
-/// Returns sorted (i,j) pairs with i < j.
-pub fn pairs_sap(aabbs: &[Aabb]) -> Vec<(usize, usize)> {
-    #[derive(Copy, Clone)]
-    struct Elem {
-        min_x: f32,
-        max_x: f32,
-        idx:   usize,
+/// A persistent, deterministic 3D Spatial Hash Broadphase.
+/// Reuses allocations frame-over-frame to eliminate heap thrashing.
+pub struct GridBroadphase {
+    pub cell_size: f32,
+    grid: FxHashMap<[i32; 3], Vec<usize>>,
+    oversized: Vec<usize>,
+    pairs: Vec<(usize, usize)>,
+}
+
+impl GridBroadphase {
+    pub fn get_pairs(&self) -> usize{
+        self.pairs.len()
+    }
+    pub fn new(cell_size: f32) -> Self {
+        Self {
+            cell_size,
+            // Pre-allocate to prevent early resizing spikes
+            grid: FxHashMap::default(),
+            oversized: Vec::with_capacity(16),
+            pairs: Vec::with_capacity(8192),
+        }
     }
 
-    // Build projections; skip invalid boxes deterministically.
-    let mut elems: Vec<Elem> = Vec::with_capacity(aabbs.len());
-    for (i, a) in aabbs.iter().enumerate() {
-        let mut mn = a.min.x;
-        let mut mx = a.max.x;
+    /// Runs the broadphase and returns a deterministic, sorted slice of colliding pairs.
+    pub fn run(&mut self, aabbs: &[Aabb]) -> &[(usize, usize)] {
+        // Clear previous frame data (keeps capacity, avoids re-allocation)
+        self.grid.clear();
+        self.oversized.clear();
+        self.pairs.clear();
 
-        // Deterministic invalid cull.
-        if !mn.is_finite() || !mx.is_finite() {
-            continue;
-        }
-        if mn > mx {
-            core::mem::swap(&mut mn, &mut mx);
-        }
+        // 1. Binning Phase & Macro-Bypass
+        for (i, a) in aabbs.iter().enumerate() {
+            if !a.min.x.is_finite() { continue; }
 
-        elems.push(Elem { min_x: mn, max_x: mx, idx: i });
-    }
+            let dx = a.max.x - a.min.x;
+            let dy = a.max.y - a.min.y;
+            let dz = a.max.z - a.min.z;
 
-    // Sort by min, then by index for stability.
-    elems.sort_by(|a, b| a.min_x.total_cmp(&b.min_x).then(a.idx.cmp(&b.idx)));
+            // Macro-bypass: massive objects skip the grid to prevent map explosion
+            if dx > self.cell_size * 5.0 || dy > self.cell_size * 5.0 || dz > self.cell_size * 5.0 {
+                self.oversized.push(i);
+                continue;
+            }
 
-    let mut active: Vec<Elem> = Vec::new();
-    let mut out: Vec<(usize, usize)> = Vec::new();
+            let min_x = (a.min.x / self.cell_size).floor() as i32;
+            let max_x = (a.max.x / self.cell_size).floor() as i32;
+            let min_y = (a.min.y / self.cell_size).floor() as i32;
+            let max_y = (a.max.y / self.cell_size).floor() as i32;
+            let min_z = (a.min.z / self.cell_size).floor() as i32;
+            let max_z = (a.max.z / self.cell_size).floor() as i32;
 
-    for e in elems {
-        // Drop anything whose max.x < current min.x (using canonical max_x).
-        active.retain(|a| a.max_x >= e.min_x);
-
-        // Test against remaining active set.
-        for a in &active {
-            let (i, k) = if a.idx < e.idx { (a.idx, e.idx) } else { (e.idx, a.idx) };
-            let aa = &aabbs[i];
-            let bb = &aabbs[k];
-
-            // overlaps() should be NaN-safe by construction; if not, NaNs will deterministically return false.
-            if aa.overlaps(bb) {
-                out.push((i, k));
+            for x in min_x..=max_x {
+                for y in min_y..=max_y {
+                    for z in min_z..=max_z {
+                        self.grid.entry([x, y, z]).or_default().push(i);
+                    }
+                }
             }
         }
 
-        active.push(e);
-    }
+        // 2. Micro-Pair Extraction (Grid Cells)
+        for cell in self.grid.values() {
+            let len = cell.len();
+            if len < 2 { continue; }
 
-    // Stable sorted pair list for deterministic narrow-phase batching.
-    out.sort_unstable();
-    out
+            for i in 0..len {
+                for j in (i + 1)..len {
+                    let a = cell[i];
+                    let b = cell[j];
+                    let (idx_a, idx_b) = if a < b { (a, b) } else { (b, a) };
+
+                    if aabbs[idx_a].overlaps(&aabbs[idx_b]) {
+                        self.pairs.push((idx_a, idx_b));
+                    }
+                }
+            }
+        }
+
+        // 3. Macro-Pair Extraction (Oversized vs Everything)
+        for &big_idx in &self.oversized {
+            let big_aabb = &aabbs[big_idx];
+            for (i, a) in aabbs.iter().enumerate() {
+                if i != big_idx && big_aabb.overlaps(a) {
+                    let (idx_a, idx_b) = if i < big_idx { (i, big_idx) } else { (big_idx, i) };
+                    self.pairs.push((idx_a, idx_b));
+                }
+            }
+        }
+
+        // 4. The Determinism Guarantee
+        self.pairs.sort_unstable();
+        self.pairs.dedup();
+
+        &self.pairs
+    }
 }

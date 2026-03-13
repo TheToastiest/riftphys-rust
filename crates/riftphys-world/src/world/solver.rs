@@ -1,191 +1,210 @@
+// crates/riftphys-world/src/world/solver.rs
+use rayon::prelude::*;
 use super::geom::orthonormal_basis;
-use super::world::{Contact, WarmImp, World};
+use riftphys_core::Vec3;
+use super::world::{Contact, World};
+use super::step::TERRAIN_CI;
+use super::islands::Island;
 use riftphys_materials::materials as mats;
-use riftphys_viz::LedgerEvent;
 
-use std::collections::BTreeMap;
+#[derive(Copy, Clone)]
+struct UnsafeSyncBodies(*mut riftphys_dynamics::Bodies);
+unsafe impl Send for UnsafeSyncBodies {}
+unsafe impl Sync for UnsafeSyncBodies {}
 
-const TERRAIN_CI: usize = u32::MAX as usize; // 0xFFFF_FFFF
-const TERRAIN_LEDGER_B: u32 = u32::MAX;      // ledger-only sentinel for "terrain body"
+impl UnsafeSyncBodies {
+    #[inline(always)]
+    unsafe fn get_mut(&self) -> &mut riftphys_dynamics::Bodies { &mut *self.0 }
+}
+
+// Wrapper to safely mutate our accumulated impulses array in parallel
+#[derive(Copy, Clone)]
+struct UnsafeAcc(*mut f32);
+unsafe impl Send for UnsafeAcc {}
+unsafe impl Sync for UnsafeAcc {}
+
+impl UnsafeAcc {
+    #[inline(always)]
+    unsafe fn get_mut_slice(&self, len: usize) -> &mut [f32] {
+        std::slice::from_raw_parts_mut(self.0, len)
+    }
+}
+
+struct ContactConstraint {
+    ai: u32, bi: u32,
+    b_is_terrain: bool,
+    inv_a: f32, // <-- ADDED: Permafrost dynamic mass
+    inv_b: f32, // <-- ADDED: Permafrost dynamic mass
+    inv_mass_sum: f32,
+    normal: Vec3, t1: Vec3, t2: Vec3,
+    mu_s: f32,
+    depth_bias: f32,
+    restitution_bias: f32,
+}
 
 impl World {
-    pub(super) fn solve_contacts(&mut self, contacts: &[Contact]) {
-        let iterations = 12;
-        let slop = 0.010;
-        let beta = 0.10;
+    pub fn solve_islands_parallel(&mut self, islands: &[Island], contacts: &[Contact], dt: f32) {
+        let iterations = 8;
+        let beta = 0.2;
+        let slop = 0.005;
+        let num_bodies = self.bodies.len();
 
-        // Build warmstart vector aligned with `contacts` order
-        let mut warms: Vec<WarmImp> = Vec::with_capacity(contacts.len());
-        for c in contacts {
-            let key = if c.a_collider <= c.b_collider {
-                (c.a_collider as u32, c.b_collider as u32)
-            } else {
-                (c.b_collider as u32, c.a_collider as u32)
-            };
-            warms.push(*self.warm_cache.get(&key).unwrap_or(&WarmImp::default()));
+        // 1. Constraint Pre-processing
+        let constraints: Vec<ContactConstraint> = contacts.iter().map(|c| {
+            let ai = self.colliders[c.a_collider].body.0;
+            let b_is_terrain = c.b_collider == TERRAIN_CI;
+            let bi = if b_is_terrain { 0 } else { self.colliders[c.b_collider].body.0 };
+
+            let a_awake = self.sleep.is_awake(ai as usize);
+            let b_awake = if b_is_terrain { false } else { self.sleep.is_awake(bi as usize) };
+
+            let inv_a = if a_awake { self.bodies.inv_mass_of(ai) } else { 0.0 };
+            let inv_b = if b_awake { self.bodies.inv_mass_of(bi) } else { 0.0 };
+            let inv_sum = inv_a + inv_b;
+
+            let pair = mats::pair_props(self.colliders[c.a_collider].material.id,
+                                        if b_is_terrain { c.env_material.unwrap_or(mats::MaterialId::Default) }
+                                        else { self.colliders[c.b_collider].material.id });
+
+            // THE FIX: Force the narrowphase environment normal to point A -> B (Downwards)
+            let mut normal = c.normal;
+            if b_is_terrain {
+                normal = -normal;
+            }
+
+            let (t1, t2) = orthonormal_basis(normal);
+            let v_rel = if b_is_terrain { -self.bodies.vel(ai).lin }
+            else { self.bodies.vel(bi).lin - self.bodies.vel(ai).lin };
+
+            let v_rel_n = v_rel.dot(normal);
+            let restitution_bias = if v_rel_n < -1.0 { -pair.restitution * v_rel_n } else { 0.0 };
+
+            ContactConstraint {
+                ai, bi, b_is_terrain,
+                inv_a, inv_b,
+                inv_mass_sum: if inv_sum > 0.0 { 1.0 / inv_sum } else { 0.0 },
+                normal, t1, t2, mu_s: pair.mu_s,
+                depth_bias: (c.depth - slop).max(0.0) * (beta / dt),
+                restitution_bias,
+            }
+        }).collect();
+
+        // 2a. Graph Coloring (Level Scheduling) for Contacts
+        let mut contact_batches: Vec<Vec<usize>> = Vec::with_capacity(16);
+        let mut body_level = vec![0; num_bodies];
+
+        for c_idx in 0..constraints.len() {
+            let cs = &constraints[c_idx];
+            let level_a = body_level[cs.ai as usize];
+            let level_b = if cs.b_is_terrain { 0 } else { body_level[cs.bi as usize] };
+
+            let target_level = level_a.max(level_b);
+            if target_level >= contact_batches.len() {
+                contact_batches.push(Vec::new());
+            }
+            contact_batches[target_level].push(c_idx);
+
+            body_level[cs.ai as usize] = target_level + 1;
+            // Terrain prevents lock contention by not elevating its level
+            if !cs.b_is_terrain { body_level[cs.bi as usize] = target_level + 1; }
         }
 
-        for v in &mut self.last_normal_impulse { *v = 0.0; }
+        // 2b. Graph Coloring for Joints
+        let mut joint_batches: Vec<Vec<usize>> = Vec::with_capacity(8);
+        let mut joint_body_level = vec![0; num_bodies];
+        let mut active_joints = Vec::new();
+        for island in islands { active_joints.extend(&island.joint_indices); }
 
-        let mut next_warms: Vec<WarmImp> = vec![WarmImp::default(); contacts.len()];
+        for &j_idx in &active_joints {
+            let (id_a, id_b) = match &self.joints.kinds()[j_idx] {
+                riftphys_articulation::JointKind::Distance(j) => (j.a.0, j.b.0),
+                riftphys_articulation::JointKind::D6(j) => (j.a.0, j.b.0),
+            };
+            let level_a = joint_body_level[id_a as usize];
+            let level_b = joint_body_level[id_b as usize];
+            let target = level_a.max(level_b);
 
-        for it in 0..iterations {
-            for (idx, c) in contacts.iter().enumerate() {
-                // Terrain contacts use TERRAIN_CI as collider-index sentinel on the B side.
-                // A side must always be a real collider index.
-                let ai = self.colliders[c.a_collider].body.0;
+            if target >= joint_batches.len() { joint_batches.push(Vec::new()); }
+            joint_batches[target].push(j_idx);
 
-                let b_is_terrain = c.b_collider == TERRAIN_CI;
-                let bi = if b_is_terrain {
-                    0u32 // dummy; never used to index bodies
-                } else {
-                    self.colliders[c.b_collider].body.0
-                };
+            joint_body_level[id_a as usize] = target + 1;
+            joint_body_level[id_b as usize] = target + 1;
+        }
 
-                if !b_is_terrain && ai == bi { continue; }
+        // 3. The Global Parallel Solve
+        let mut acc_jn = vec![0.0f32; constraints.len()];
+        let acc_jn_ptr = UnsafeAcc(acc_jn.as_mut_ptr());
+        let bodies_ptr = UnsafeSyncBodies(&mut self.bodies as *mut _);
+        let joints_ref = &self.joints;
+        let num_constraints = constraints.len();
+        let constraints_slice = constraints.as_slice();
 
-                let inv_a = self.bodies.inv_mass_of(ai);
-                let inv_b = if b_is_terrain { 0.0 } else { self.bodies.inv_mass_of(bi) };
-                if inv_a + inv_b == 0.0 { continue; }
+        for _it in 0..iterations {
+            // A. Solve Joints (Batched Parallel)
+            for batch in &joint_batches {
+                batch.par_iter().for_each(|&j_idx| {
+                    let bodies = unsafe { bodies_ptr.get_mut() };
+                    if let riftphys_articulation::JointKind::Distance(j) = &joints_ref.kinds()[j_idx] {
+                        let pa = bodies.pose(j.a.0).pos;
+                        let pb = bodies.pose(j.b.0).pos;
+                        let dir = pb - pa;
+                        let len = dir.length();
+                        if len < 1e-6 { return; }
+                        let n = dir / len;
 
-                // Warmstart only on first iteration
-                if it == 0 {
-                    let w = warms[idx];
-                    if w.jn != 0.0 || w.jt1 != 0.0 || w.jt2 != 0.0 {
-                        let n = c.normal;
-                        let (t1, t2) = orthonormal_basis(n);
-                        let imp = n * w.jn + t1 * w.jt1 + t2 * w.jt2;
+                        let inv_a = bodies.inv_mass_of(j.a.0);
+                        let inv_b = bodies.inv_mass_of(j.b.0);
+                        let inv_sum = inv_a + inv_b;
+                        if inv_sum < 1e-9 { return; }
 
-                        self.bodies.apply_impulse(ai, -imp);
-                        if !b_is_terrain {
-                            self.bodies.apply_impulse(bi, imp);
-                        }
+                        let v_rel = (bodies.vel(j.b.0).lin - bodies.vel(j.a.0).lin).dot(n);
+                        let bias = (len - j.rest) * (0.1 / dt);
+                        let j_mag = -(v_rel + bias) / inv_sum;
+
+                        bodies.apply_impulse(j.a.0, -n * j_mag);
+                        bodies.apply_impulse(j.b.0,  n * j_mag);
                     }
-                }
+                });
+            }
 
-                // Effective pair properties (order-independent)
-                let ma = self.colliders[c.a_collider].material;
-                let mb_id = if b_is_terrain {
-                    mats::MaterialId::Default
-                } else {
-                    self.colliders[c.b_collider].material.id
-                };
-                let pair = mats::pair_props(ma.id, mb_id);
-                let restitution = pair.restitution;
+            // B. Solve Contacts (Batched Parallel)
+            for batch in &contact_batches {
+                batch.par_iter().for_each(move |&c_idx| {
+                    let cs = &constraints_slice[c_idx];
 
-                let va = self.bodies.vel(ai);
-                let vb_lin = if b_is_terrain { riftphys_core::Vec3::ZERO } else { self.bodies.vel(bi).lin };
-                let n = c.normal;
+                    let bodies = unsafe { bodies_ptr.get_mut() };
+                    let acc_jn_slice = unsafe { acc_jn_ptr.get_mut_slice(num_constraints) };
 
-                let rel_v_n = (vb_lin - va.lin).dot(n);
+                    let va = bodies.vel(cs.ai).lin;
+                    let vb = if cs.b_is_terrain { Vec3::ZERO } else { bodies.vel(cs.bi).lin };
+                    let v_rel_n = (vb - va).dot(cs.normal);
 
-                // Normal impulse
-                let mut jn = 0.0;
-                if rel_v_n < 0.0 {
-                    jn = -(1.0 + restitution) * rel_v_n / (inv_a + inv_b);
-                    let imp_n = n * jn;
+                    let jn_raw = (cs.restitution_bias + cs.depth_bias - v_rel_n) * cs.inv_mass_sum;
 
-                    self.bodies.apply_impulse(ai, -imp_n);
-                    if !b_is_terrain {
-                        self.bodies.apply_impulse(bi, imp_n);
+                    let old_jn = acc_jn_slice[c_idx];
+                    acc_jn_slice[c_idx] = (old_jn + jn_raw).max(0.0);
+                    let jn = acc_jn_slice[c_idx] - old_jn;
+
+                    let impulse = cs.normal * jn;
+
+                    if cs.inv_a > 0.0 { bodies.apply_impulse(cs.ai, -impulse); }
+                    if cs.inv_b > 0.0 { bodies.apply_impulse(cs.bi, impulse); }
+
+                    let v_f = if cs.b_is_terrain { -bodies.vel(cs.ai).lin }
+                    else { bodies.vel(cs.bi).lin - bodies.vel(cs.ai).lin };
+
+                    let tangent_v = Vec3::new(v_f.dot(cs.t1), v_f.dot(cs.t2), 0.0);
+                    let max_fric = cs.mu_s * acc_jn_slice[c_idx];
+
+                    if tangent_v.length() > 1e-6 {
+                        let j_fric = -(tangent_v.truncate() * cs.inv_mass_sum);
+                        let impulse_f = (cs.t1 * j_fric.x + cs.t2 * j_fric.y).clamp_length_max(max_fric);
+
+                        if cs.inv_a > 0.0 { bodies.apply_impulse(cs.ai, -impulse_f); }
+                        if cs.inv_b > 0.0 { bodies.apply_impulse(cs.bi, impulse_f); }
                     }
-
-                    self.last_normal_impulse[ai as usize] += jn.max(0.0);
-                    if !b_is_terrain {
-                        self.last_normal_impulse[bi as usize] += jn.max(0.0);
-                    }
-
-                    self.record(LedgerEvent::ImpulseN {
-                        a: ai,
-                        b: if b_is_terrain { TERRAIN_LEDGER_B } else { bi },
-                        jn,
-                    });
-                }
-                next_warms[idx].jn = jn;
-
-                // Positional correction
-                let corr = (c.depth - slop).max(0.0) * beta;
-                if corr > 0.0 {
-                    let denom = inv_a + inv_b;
-                    let corr_vec = n * (corr / denom);
-
-                    self.bodies.apply_position_delta(ai, -corr_vec * inv_a);
-                    if !b_is_terrain {
-                        self.bodies.apply_position_delta(bi, corr_vec * inv_b);
-                    }
-
-                    self.record(LedgerEvent::PosCorr {
-                        a: ai,
-                        b: if b_is_terrain { TERRAIN_LEDGER_B } else { bi },
-                        corr,
-                    });
-                }
-
-                // Friction
-                if jn > 0.0 || c.depth > slop {
-                    let va2 = self.bodies.vel(ai);
-                    let vb2_lin = if b_is_terrain { riftphys_core::Vec3::ZERO } else { self.bodies.vel(bi).lin };
-                    let vrel = vb2_lin - va2.lin;
-
-                    let v_n = n * vrel.dot(n);
-                    let v_t = vrel - v_n;
-
-                    let (t1, t2) = orthonormal_basis(n);
-                    let vt1 = v_t.dot(t1);
-                    let vt2 = v_t.dot(t2);
-
-                    let denom = inv_a + inv_b;
-                    if denom > 0.0 {
-                        let jt1_des = -vt1 / denom;
-                        let jt2_des = -vt2 / denom;
-                        let jt_des_len = (jt1_des * jt1_des + jt2_des * jt2_des).sqrt();
-
-                        let vt_mag = v_t.length();
-                        let mu_k_eff = mats::mu_dynamic(&pair, vt_mag);
-
-                        // Static cone uses last normal impulse if jn==0 (resting contact)
-                        let jn_for_limit = if jn > 0.0 { jn } else { (corr / beta).max(0.0) }; // deterministic-ish fallback
-                        let jt_max_static = pair.mu_s * jn_for_limit;
-
-                        let (jt1, jt2) = if jt_des_len <= jt_max_static || jn_for_limit == 0.0 {
-                            (jt1_des, jt2_des)
-                        } else {
-                            let jt_max_kin = mu_k_eff * jn_for_limit;
-                            let scale = if jt_des_len > 1.0e-9 { jt_max_kin / jt_des_len } else { 0.0 };
-                            (jt1_des * scale, jt2_des * scale)
-                        };
-
-                        next_warms[idx].jt1 = jt1;
-                        next_warms[idx].jt2 = jt2;
-
-                        let jt_vec = t1 * jt1 + t2 * jt2;
-
-                        self.bodies.apply_impulse(ai, -jt_vec);
-                        if !b_is_terrain {
-                            self.bodies.apply_impulse(bi, jt_vec);
-                        }
-
-                        self.record(LedgerEvent::ImpulseT {
-                            a: ai,
-                            b: if b_is_terrain { TERRAIN_LEDGER_B } else { bi },
-                            jt1,
-                            jt2,
-                        });
-                    }
-                }
+                });
             }
         }
-
-        // write warmstart cache for next tick
-        let mut new_cache: BTreeMap<(u32, u32), WarmImp> = BTreeMap::new();
-        for (idx, c) in contacts.iter().enumerate() {
-            let key = if c.a_collider <= c.b_collider {
-                (c.a_collider as u32, c.b_collider as u32)
-            } else {
-                (c.b_collider as u32, c.a_collider as u32)
-            };
-            new_cache.insert(key, next_warms[idx]);
-        }
-        self.warm_cache = new_cache;
     }
 }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT or your internal license
+// SPDX-License-Identifier: RiftForged Proprietary License
 #![allow(clippy::missing_safety_doc)]
 
 mod tests;
@@ -29,16 +29,11 @@ use riftphys_world::world;
 pub type RPhysBool = u32;
 pub type RPhysResult = u32;
 
-// Keep this as u32 to match riftphys_c.h and avoid UB from invalid discriminants.
 pub type RPhysBodyType = u32;
 pub const RPHYS_BODY_STATIC: RPhysBodyType = 0;
 pub const RPHYS_BODY_DYNAMIC: RPhysBodyType = 1;
 
-// Treat zero-length (or effectively-zero) ray directions as "OK + miss".
 const RPHYS_RAY_DIR_EPS_SQ: f32 = 1.0e-20;
-
-// Stationary sweep epsilon (used only to force a query path when we need overlap semantics).
-const RPHYS_STATIONARY_SWEEP_EPS: f32 = 1.0e-6;
 
 pub const RPHYS_FALSE: RPhysBool = 0;
 pub const RPHYS_TRUE: RPhysBool = 1;
@@ -90,7 +85,6 @@ pub extern "C" fn rphys_get_abi_version() -> u32 {
     RPHYS_ABI_VERSION
 }
 
-// Null-terminated, stable for a build (crate version).
 static BUILD_ID: &str = concat!("riftphys_ffi-", env!("CARGO_PKG_VERSION"), "\0");
 
 #[no_mangle]
@@ -119,7 +113,7 @@ pub struct RPhysHeightfieldDesc {
     pub flags: u32,
     pub width: u32,
     pub height: u32,
-    pub row_stride: u32, // 0 = width
+    pub row_stride: u32,
     pub cell_size_x: f32,
     pub cell_size_z: f32,
     pub height_scale: f32,
@@ -211,14 +205,14 @@ pub struct RPhysRayQuery {
     pub origin: RPhysVec3,
     pub dir: RPhysVec3,
     pub max_distance: f32,
-    pub ignore_body: u32, // 1-based; 0 = none
+    pub ignore_body: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct RPhysRayHit {
     pub hit: RPhysBool,
-    pub body_id: u32, // 1-based; 0 = none; terrain = RPHYS_TERRAIN_BODY_ID
+    pub body_id: u32,
     pub fraction: f32,
     pub point: RPhysVec3,
     pub normal: RPhysVec3,
@@ -231,14 +225,14 @@ pub struct RPhysCapsuleSweepQuery {
     pub to: RPhysVec3,
     pub radius: f32,
     pub half_height: f32,
-    pub ignore_body: u32, // 1-based; 0 = none
+    pub ignore_body: u32,
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct RPhysCapsuleSweepHit {
     pub hit: RPhysBool,
-    pub body_id: u32, // 1-based; 0 = none; terrain = RPHYS_TERRAIN_BODY_ID
+    pub body_id: u32,
     pub fraction: f32,
     pub started_overlapping: RPhysBool,
     pub point: RPhysVec3,
@@ -265,14 +259,14 @@ pub struct RPhysStepParams {
 
 struct WorldState {
     world: world::World,
-    bodies_created: u32,    // monotonic max assigned body index + 1 (no-reuse contract)
-    colliders_created: u32, // monotonic (no-reuse contract)
+    bodies_created: u32,
+    colliders_created: u32,
 }
 
 pub struct RPhysWorld {
     state: Mutex<WorldState>,
-    max_bodies: u32,    // lifetime-created cap
-    max_colliders: u32, // lifetime-created cap
+    max_bodies: u32,
+    max_colliders: u32,
 }
 
 impl RPhysWorld {
@@ -282,7 +276,6 @@ impl RPhysWorld {
     }
     #[inline]
     unsafe fn from_raw_mut<'a>(ptr: *mut RPhysWorld) -> &'a RPhysWorld {
-        // NOTE: we only ever take &RPhysWorld and mutate through the mutex.
         &*ptr
     }
 }
@@ -320,7 +313,6 @@ fn enforce_v1_monotonic_body_alloc(
         return Err(RPHYS_ERR_INTERNAL);
     }
 
-    // ABI v1: no reuse, no gaps. next id must be exactly bodies_created.
     if body.0 != st.bodies_created {
         let _ = st.world.remove_body(body);
         set_last_error(&format!(
@@ -390,7 +382,6 @@ fn checked_live_body_id(st: &WorldState, id: u32, ctx: &'static str) -> Result<B
 
     let raw = id - 1;
 
-    // Range is against monotonic created max (not alive count).
     if raw >= st.bodies_created {
         set_last_error(&format!(
             "{ctx}: body_id out of range (id={id}, created_max={})",
@@ -453,17 +444,8 @@ unsafe fn write_identity_pose(out_pose: *mut RPhysIsometry) {
     if out_pose.is_null() {
         return;
     }
-    (*out_pose).pos = RPhysVec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-    (*out_pose).rot = RPhysQuat {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-        w: 1.0,
-    };
+    (*out_pose).pos = RPhysVec3 { x: 0.0, y: 0.0, z: 0.0 };
+    (*out_pose).rot = RPhysQuat { x: 0.0, y: 0.0, z: 0.0, w: 1.0 };
 }
 
 #[inline]
@@ -471,16 +453,8 @@ unsafe fn write_zero_vel(out_vel: *mut RPhysVelocity) {
     if out_vel.is_null() {
         return;
     }
-    (*out_vel).lin = RPhysVec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-    (*out_vel).ang = RPhysVec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
+    (*out_vel).lin = RPhysVec3 { x: 0.0, y: 0.0, z: 0.0 };
+    (*out_vel).ang = RPhysVec3 { x: 0.0, y: 0.0, z: 0.0 };
 }
 
 #[inline]
@@ -491,16 +465,8 @@ unsafe fn write_raycast_miss(out_hit: *mut RPhysRayHit) {
     (*out_hit).hit = RPHYS_FALSE;
     (*out_hit).body_id = RPHYS_INVALID_BODY_ID;
     (*out_hit).fraction = 1.0;
-    (*out_hit).point = RPhysVec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-    (*out_hit).normal = RPhysVec3 {
-        x: 0.0,
-        y: 1.0,
-        z: 0.0,
-    };
+    (*out_hit).point = RPhysVec3 { x: 0.0, y: 0.0, z: 0.0 };
+    (*out_hit).normal = RPhysVec3 { x: 0.0, y: 1.0, z: 0.0 };
 }
 
 #[inline]
@@ -512,16 +478,8 @@ unsafe fn write_sweep_miss(out_hit: *mut RPhysCapsuleSweepHit) {
     (*out_hit).body_id = RPHYS_INVALID_BODY_ID;
     (*out_hit).fraction = 1.0;
     (*out_hit).started_overlapping = RPHYS_FALSE;
-    (*out_hit).point = RPhysVec3 {
-        x: 0.0,
-        y: 0.0,
-        z: 0.0,
-    };
-    (*out_hit).normal = RPhysVec3 {
-        x: 0.0,
-        y: 1.0,
-        z: 0.0,
-    };
+    (*out_hit).point = RPhysVec3 { x: 0.0, y: 0.0, z: 0.0 };
+    (*out_hit).normal = RPhysVec3 { x: 0.0, y: 1.0, z: 0.0 };
 }
 
 /* ===================== CONVERSIONS ===================== */
@@ -533,11 +491,7 @@ fn v3_from_ffi(v: RPhysVec3) -> riftphys_core::Vec3 {
 #[inline]
 fn v3_to_ffi(v: riftphys_core::Vec3) -> RPhysVec3 {
     let a = v.to_array();
-    RPhysVec3 {
-        x: a[0],
-        y: a[1],
-        z: a[2],
-    }
+    RPhysVec3 { x: a[0], y: a[1], z: a[2] }
 }
 
 #[inline]
@@ -556,12 +510,7 @@ fn q_from_ffi(q: RPhysQuat) -> riftphys_core::Quat {
 
 #[inline]
 fn q_to_ffi(q: riftphys_core::Quat) -> RPhysQuat {
-    RPhysQuat {
-        x: q.x,
-        y: q.y,
-        z: q.z,
-        w: q.w,
-    }
+    RPhysQuat { x: q.x, y: q.y, z: q.z, w: q.w }
 }
 
 #[inline]
@@ -570,31 +519,21 @@ fn iso_from_ffi(p: &RPhysIsometry) -> riftphys_core::Isometry {
 }
 #[inline]
 fn iso_to_ffi(p: &riftphys_core::Isometry) -> RPhysIsometry {
-    RPhysIsometry {
-        pos: v3_to_ffi(p.pos),
-        rot: q_to_ffi(p.rot),
-    }
+    RPhysIsometry { pos: v3_to_ffi(p.pos), rot: q_to_ffi(p.rot) }
 }
 
 #[inline]
 fn vel_from_ffi(v: &RPhysVelocity) -> Velocity {
-    Velocity {
-        lin: v3_from_ffi(v.lin),
-        ang: v3_from_ffi(v.ang),
-    }
+    Velocity { lin: v3_from_ffi(v.lin), ang: v3_from_ffi(v.ang) }
 }
 #[inline]
 fn vel_to_ffi(v: &Velocity) -> RPhysVelocity {
-    RPhysVelocity {
-        lin: v3_to_ffi(v.lin),
-        ang: v3_to_ffi(v.ang),
-    }
+    RPhysVelocity { lin: v3_to_ffi(v.lin), ang: v3_to_ffi(v.ang) }
 }
 
 #[inline]
 fn mat_from_ffi(m: &RPhysMaterial) -> Material {
     let mut out = material(MaterialId::Default);
-
     let mu_s = quantize(m.mu_static.max(0.0));
     let mu_k = quantize(m.mu_dynamic.max(0.0));
     let rest = quantize(m.restitution.clamp(0.0, 1.0));
@@ -602,11 +541,9 @@ fn mat_from_ffi(m: &RPhysMaterial) -> Material {
     out.contact.mu_s = mu_s;
     out.contact.mu_k = mu_k;
     out.contact.restitution = rest;
-
     out.mu_s = mu_s;
     out.mu_k = mu_k;
     out.restitution = rest;
-
     out
 }
 
@@ -618,7 +555,6 @@ pub unsafe extern "C" fn rphys_last_error_copy(
     cap: u32,
     out_len: *mut u32,
 ) -> RPhysResult {
-    // Determine current message length (bytes, without NUL) without allocating.
     let mut len: u32 = 0;
     LAST_ERROR.with(|cell| {
         if let Some(ref s) = *cell.borrow() {
@@ -630,7 +566,6 @@ pub unsafe extern "C" fn rphys_last_error_copy(
         *out_len = len;
     }
 
-    // Allow “query length only”.
     if cap == 0 {
         return RPHYS_OK;
     }
@@ -638,7 +573,6 @@ pub unsafe extern "C" fn rphys_last_error_copy(
         return RPHYS_ERR_NULL;
     }
 
-    // No message => empty string.
     if len == 0 {
         *(dst as *mut u8) = 0;
         return RPHYS_OK;
@@ -1444,21 +1378,7 @@ pub unsafe extern "C" fn rphys_world_capsule_sweep(
             Err(e) => return e,
         };
 
-        // Stationary: overlap semantics only (must *start* overlapping to count as a hit).
-        let delta = to - from;
-        let stationary = delta.length_squared() == 0.0;
-
-        let sweep_to = if stationary {
-            from + vec3(RPHYS_STATIONARY_SWEEP_EPS, 0.0, 0.0)
-        } else {
-            to
-        };
-
-        if let Some(hit) = st.world.sweep_capsule(from, sweep_to, q.radius, q.half_height, ignore) {
-            if stationary && !hit.started_overlapping {
-                return RPHYS_OK; // overlap query semantics: not overlapping => miss
-            }
-
+        if let Some(hit) = st.world.sweep_capsule(from, to, q.radius, q.half_height, ignore) {
             let body_id = if hit.body.0 == u32::MAX {
                 RPHYS_TERRAIN_BODY_ID
             } else {
@@ -1471,7 +1391,7 @@ pub unsafe extern "C" fn rphys_world_capsule_sweep(
             unsafe {
                 (*out_hit).hit = RPHYS_TRUE;
                 (*out_hit).body_id = body_id;
-                (*out_hit).fraction = if stationary { 0.0 } else { hit.toi.clamp(0.0, 1.0) };
+                (*out_hit).fraction = hit.toi.clamp(0.0, 1.0);
                 (*out_hit).started_overlapping = if hit.started_overlapping { RPHYS_TRUE } else { RPHYS_FALSE };
                 (*out_hit).point = v3_to_ffi(hit.point);
                 (*out_hit).normal = v3_to_ffi(hit.normal);
@@ -1483,13 +1403,16 @@ pub unsafe extern "C" fn rphys_world_capsule_sweep(
 }
 
 /* ===================== TERRAIN ===================== */
+// THE FIX: Point the FFI to the verified O(1) HeightField in the terrain crate
+use riftphys_terrain::terrain::HeightField as EnvHeightfield;
+use riftphys_materials::materials::MaterialId;
 
 #[no_mangle]
 pub unsafe extern "C" fn rphys_world_set_heightfield_i16(
     world: *mut RPhysWorld,
     hf: *const RPhysHeightfieldDesc,
-    origin_x: f32,
-    origin_z: f32,
+    origin_x: f32, // THE FIX: Removed underscore
+    origin_z: f32, // THE FIX: Removed underscore
     y_offset: f32,
 ) -> RPhysResult {
     ffi_guard(|| {
@@ -1509,59 +1432,43 @@ pub unsafe extern "C" fn rphys_world_set_heightfield_i16(
             set_last_error("rphys_world_set_heightfield_i16: width/height == 0");
             return RPHYS_ERR_BAD_ARG;
         }
+        if d.row_stride != 0 && d.row_stride < d.width {
+            return bad_arg("rphys_world_set_heightfield_i16", "row_stride must be >= width");
+        }
         if d.heights.is_null() {
             set_last_error("rphys_world_set_heightfield_i16: heights is null");
             return RPHYS_ERR_NULL;
         }
-        if !(d.cell_size_x.is_finite()
-            && d.cell_size_z.is_finite()
-            && d.cell_size_x > 0.0
-            && d.cell_size_z > 0.0)
-        {
+        if !(d.cell_size_x.is_finite() && d.cell_size_z.is_finite() && d.cell_size_x > 0.0 && d.cell_size_z > 0.0) {
             set_last_error("rphys_world_set_heightfield_i16: bad cell sizes");
-            return RPHYS_ERR_BAD_ARG;
-        }
-        if !(d.height_scale.is_finite() && d.height_offset.is_finite()) {
-            set_last_error("rphys_world_set_heightfield_i16: height_scale/height_offset not finite");
-            return RPHYS_ERR_BAD_ARG;
-        }
-        if !(origin_x.is_finite() && origin_z.is_finite() && y_offset.is_finite()) {
-            set_last_error("rphys_world_set_heightfield_i16: origin/y_offset not finite");
             return RPHYS_ERR_BAD_ARG;
         }
 
         let stride = if d.row_stride == 0 { d.width } else { d.row_stride };
-        if stride < d.width {
-            set_last_error("rphys_world_set_heightfield_i16: row_stride < width");
-            return RPHYS_ERR_BAD_ARG;
-        }
-
         let count = match (stride as usize).checked_mul(d.height as usize) {
             Some(v) => v,
-            None => {
-                set_last_error("rphys_world_set_heightfield_i16: stride*height overflow");
-                return RPHYS_ERR_BAD_ARG;
-            }
+            None => { return bad_arg("rphys_world_set_heightfield_i16", "stride*height overflow"); }
         };
 
         let src = unsafe { core::slice::from_raw_parts(d.heights, count) };
-        let cell = glam::Vec2::new(d.cell_size_x, d.cell_size_z);
 
-        let hf = match riftphys_terrain::HeightField::from_i16_grid_strided(
-            d.width,
-            d.height,
-            stride,
-            cell,
-            src,
-            d.height_scale,
-            d.height_offset,
-        ) {
-            Ok(hf) => hf,
-            Err(e) => {
-                set_last_error(&format!("rphys_world_set_heightfield_i16: {e}"));
-                return RPHYS_ERR_BAD_ARG;
+        let mut f32_heights = Vec::with_capacity((d.width * d.height) as usize);
+        for r in 0..d.height {
+            for c in 0..d.width {
+                let idx = (r * stride + c) as usize;
+                let h_raw = src[idx] as f32;
+                f32_heights.push(h_raw * d.height_scale + d.height_offset + y_offset);
             }
-        };
+        }
+
+        // THE FIX: Use from_heights to route into the proven O(1) math with the origin offsets
+        let env_hf = EnvHeightfield::from_heights(
+            glam::UVec2::new(d.width, d.height),
+            glam::Vec2::new(d.cell_size_x, d.cell_size_z),
+            glam::Vec2::new(origin_x, origin_z),
+            f32_heights,
+            MaterialId::Grit,
+        );
 
         let w = unsafe { RPhysWorld::from_raw_mut(world) };
         let mut st = match w.state.lock() {
@@ -1569,9 +1476,9 @@ pub unsafe extern "C" fn rphys_world_set_heightfield_i16(
             Err(poison) => poison.into_inner(),
         };
 
-        st.world.set_heightfield_at(hf, origin_x, origin_z, y_offset);
+        st.world.clear_environments();
+        st.world.add_environment(Box::new(env_hf));
 
-        let _ = d.flags;
         RPHYS_OK
     })
 }
@@ -1592,35 +1499,33 @@ pub unsafe extern "C" fn rphys_world_set_heightfield_raw32_square(
             set_last_error("rphys_world_set_heightfield_raw32_square: null arg");
             return RPHYS_ERR_NULL;
         }
-        if bytes_len == 0 {
-            set_last_error("rphys_world_set_heightfield_raw32_square: bytes_len == 0");
-            return RPHYS_ERR_BAD_ARG;
+        if bytes_len < 4 {
+            return bad_arg("rphys_world_set_heightfield_raw32_square", "bytes_len too small to form a grid");
         }
-        if !(origin_x.is_finite() && origin_z.is_finite() && y_offset.is_finite()) {
-            set_last_error("rphys_world_set_heightfield_raw32_square: origin/y_offset not finite");
-            return RPHYS_ERR_BAD_ARG;
-        }
-        if !(world_size_x.is_finite() && world_size_z.is_finite()) {
-            set_last_error("rphys_world_set_heightfield_raw32_square: world_size_x/z not finite");
-            return RPHYS_ERR_BAD_ARG;
-        }
-        if !(world_size_x > 0.0 && world_size_z > 0.0) {
-            set_last_error("rphys_world_set_heightfield_raw32_square: world_size_x/z must be > 0");
-            return RPHYS_ERR_BAD_ARG;
+        let float_count = bytes_len as usize / 4;
+        let dim = (float_count as f64).sqrt() as usize;
+        if dim * dim != float_count {
+            return bad_arg("rphys_world_set_heightfield_raw32_square", "byte length is not a square number of f32s");
         }
 
-        let data = unsafe { core::slice::from_raw_parts(bytes, bytes_len as usize) };
+        let src = unsafe { core::slice::from_raw_parts(bytes as *const f32, float_count) };
 
-        let hf = match riftphys_terrain::HeightField::from_raw32_square(
-            data,
-            glam::Vec2::new(world_size_x, world_size_z),
-        ) {
-            Ok(hf) => hf,
-            Err(e) => {
-                set_last_error(&format!("heightfield raw32 parse failed: {e}"));
-                return RPHYS_ERR_BAD_ARG;
-            }
-        };
+        let cell_size_x = world_size_x / (dim as f32 - 1.0).max(1.0);
+        let cell_size_z = world_size_z / (dim as f32 - 1.0).max(1.0);
+
+        let mut f32_heights = Vec::with_capacity(float_count);
+        for &h in src {
+            f32_heights.push(h + y_offset);
+        }
+
+        // THE FIX: Use from_heights to route into the proven O(1) math with the origin offsets
+        let env_hf = EnvHeightfield::from_heights(
+            glam::UVec2::new(dim as u32, dim as u32),
+            glam::Vec2::new(cell_size_x, cell_size_z),
+            glam::Vec2::new(origin_x, origin_z),
+            f32_heights,
+            MaterialId::Grit,
+        );
 
         let w = unsafe { RPhysWorld::from_raw_mut(world) };
         let mut st = match w.state.lock() {
@@ -1628,7 +1533,8 @@ pub unsafe extern "C" fn rphys_world_set_heightfield_raw32_square(
             Err(poison) => poison.into_inner(),
         };
 
-        st.world.set_heightfield_at(hf, origin_x, origin_z, y_offset);
+        st.world.clear_environments();
+        st.world.add_environment(Box::new(env_hf));
         RPHYS_OK
     })
 }
@@ -1645,7 +1551,235 @@ pub unsafe extern "C" fn rphys_world_clear_heightfield(world: *mut RPhysWorld) -
             Ok(g) => g,
             Err(poison) => poison.into_inner(),
         };
-        st.world.clear_heightfield();
+
+        st.world.clear_environments();
         RPHYS_OK
     })
+}
+/* ===================== KINEMATIC PLAYER CONTROLLER ===================== */
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct RPhysPlayerDesc {
+    pub start_pose: RPhysIsometry,
+    pub radius: f32,
+    pub height: f32,
+    pub speed: f32,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rphys_add_player(
+    world: *mut RPhysWorld,
+    desc: *const RPhysPlayerDesc,
+    out_player_idx: *mut u32,
+) -> RPhysResult {
+    ffi_guard(|| {
+        if !out_player_idx.is_null() {
+            unsafe { *out_player_idx = u32::MAX }; // Use MAX as invalid index for players
+        }
+        if world.is_null() || desc.is_null() || out_player_idx.is_null() {
+            set_last_error("rphys_add_player: null arg");
+            return RPHYS_ERR_NULL;
+        }
+
+        let w = unsafe { RPhysWorld::from_raw_mut(world) };
+        let d = unsafe { &*desc };
+
+        if !is_finite_iso(&d.start_pose) { return bad_arg("rphys_add_player", "pose contains NaN/Inf"); }
+        if !(d.radius.is_finite() && d.radius > 0.0) { return bad_arg("rphys_add_player", "radius must be > 0"); }
+        if !(d.height.is_finite() && d.height > 0.0) { return bad_arg("rphys_add_player", "height must be > 0"); }
+
+        let mut st = match w.state.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        // THE FIX 1: Enforce capacity to prevent engine panics.
+        // Adding a player consumes 1 underlying body and 1 collider.
+        if let Err(e) = ensure_capacity(&st, w.max_bodies, w.max_colliders, 1, 1, "rphys_add_player") {
+            return e;
+        }
+
+        let idx = st.world.add_player(iso_from_ffi(&d.start_pose));
+
+        // THE FIX 2: Sync the FFI's monotonic allocation trackers.
+        // We must tell the FFI state that a body/collider ID has been consumed.
+        st.bodies_created = st.bodies_created.saturating_add(1);
+        st.colliders_created = st.colliders_created.saturating_add(1);
+
+        // Update the newly created player with the requested physical dimensions
+        st.world.players[idx].radius = d.radius;
+        st.world.players[idx].height = d.height;
+        st.world.players[idx].speed = d.speed;
+
+        unsafe { *out_player_idx = idx as u32 };
+        RPHYS_OK
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rphys_player_get_pose(
+    world: *const RPhysWorld,
+    player_idx: u32,
+    out_pose: *mut RPhysIsometry,
+    out_grounded: *mut RPhysBool,
+) -> RPhysResult {
+    ffi_guard(|| {
+        unsafe { write_identity_pose(out_pose) };
+        if !out_grounded.is_null() { unsafe { *out_grounded = RPHYS_FALSE; } }
+
+        if world.is_null() || out_pose.is_null() { return RPHYS_ERR_NULL; }
+
+        let w = unsafe { RPhysWorld::from_raw_ref(world) };
+        let st = match w.state.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        if player_idx as usize >= st.world.players.len() {
+            return bad_arg("rphys_player_get_pose", "player_idx out of bounds");
+        }
+
+        let p_body = st.world.players[player_idx as usize].body;
+        let pose = st.world.get_body_pose(p_body);
+        let gnd = st.world.players[player_idx as usize].grounded;
+
+        unsafe {
+            ptr::write(out_pose, iso_to_ffi(&pose));
+            if !out_grounded.is_null() {
+                *out_grounded = if gnd { RPHYS_TRUE } else { RPHYS_FALSE };
+            }
+        }
+
+        RPHYS_OK
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rphys_player_set_input(
+    world: *mut RPhysWorld,
+    player_idx: u32,
+    move_dir: RPhysVec3,
+) -> RPhysResult {
+    ffi_guard(|| {
+        if world.is_null() { return RPHYS_ERR_NULL; }
+        if !is_finite_vec3(&move_dir) { return bad_arg("rphys_player_set_input", "move_dir NaN/Inf"); }
+
+        let w = unsafe { RPhysWorld::from_raw_mut(world) };
+        let mut st = match w.state.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        let idx = player_idx as usize;
+        if idx >= st.world.players.len() {
+            return bad_arg("rphys_player_set_input", "player_idx out of bounds");
+        }
+
+        // THE FIX: Pipe the FFI input directly into the PlayerController
+        st.world.players[idx].input_dir = v3_from_ffi(move_dir);
+
+        RPHYS_OK
+    })
+}
+/* ===================== ROLLBACK / SNAPSHOTS ===================== */
+
+pub struct RPhysWorldSnapshot {
+    pub tick: u64,
+    pub players: Vec<riftphys_world::world::PlayerController>,
+    pub body_poses: Vec<riftphys_core::Isometry>,
+    pub body_vels: Vec<riftphys_core::Velocity>,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rphys_world_snapshot_create(world: *const RPhysWorld) -> *mut RPhysWorldSnapshot {
+    clear_last_error();
+    match catch_unwind(AssertUnwindSafe(|| {
+        if world.is_null() {
+            set_last_error("rphys_world_snapshot_create: world is null");
+            return ptr::null_mut();
+        }
+
+        let w = unsafe { RPhysWorld::from_raw_ref(world) };
+        let st = match w.state.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        // Extract only the dynamic state needed for a rollback
+        let capacity = st.world.num_bodies() as usize;
+        let mut poses = Vec::with_capacity(capacity);
+        let mut vels = Vec::with_capacity(capacity);
+
+        for i in 0..capacity {
+            let bid = riftphys_core::BodyId(i as u32);
+            if st.world.body_alive(bid) {
+                poses.push(st.world.get_body_pose(bid));
+                vels.push(st.world.get_body_vel(bid));
+            } else {
+                poses.push(riftphys_core::Isometry::default());
+                vels.push(riftphys_core::Velocity::default());
+            }
+        }
+
+        Box::into_raw(Box::new(RPhysWorldSnapshot {
+            tick: st.world.tick_index(),
+            players: st.world.players.clone(),
+            body_poses: poses,
+            body_vels: vels,
+        }))
+    })) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            set_last_error("panic in rphys_world_snapshot_create");
+            ptr::null_mut()
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rphys_world_snapshot_restore(
+    world: *mut RPhysWorld,
+    snapshot: *const RPhysWorldSnapshot,
+) -> RPhysResult {
+    ffi_guard(|| {
+        if world.is_null() || snapshot.is_null() {
+            set_last_error("rphys_world_snapshot_restore: null arg");
+            return RPHYS_ERR_NULL;
+        }
+
+        let w = unsafe { RPhysWorld::from_raw_mut(world) };
+        let snap = unsafe { &*snapshot };
+
+        let mut st = match w.state.lock() {
+            Ok(g) => g,
+            Err(poison) => poison.into_inner(),
+        };
+
+        // 1. Restore exact timeline state
+        st.world.set_tick(snap.tick);
+        st.world.players = snap.players.clone();
+
+        // 2. Erase future data to guarantee determinism
+        st.world.clear_solver_caches();
+        st.world.wake_all_bodies();
+
+        // 3. Inject historical coordinates
+        for i in 0..snap.body_poses.len() {
+            let bid = riftphys_core::BodyId(i as u32);
+            if st.world.body_alive(bid) {
+                st.world.set_body_pose(bid, snap.body_poses[i]);
+                st.world.set_body_vel(bid, snap.body_vels[i]);
+            }
+        }
+
+        RPHYS_OK
+    })
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn rphys_world_snapshot_free(snapshot: *mut RPhysWorldSnapshot) {
+    if !snapshot.is_null() {
+        let _ = unsafe { Box::from_raw(snapshot) };
+    }
 }

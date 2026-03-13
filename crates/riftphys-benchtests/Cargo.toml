@@ -20,6 +20,9 @@ path = "src/voxel_bench_world.rs"
 name = "multi_loco_bench"
 path = "src/multi_loco_bench.rs"
 
+[[bin]]
+name = "loco_melee_test"
+path = "src/loco_melee_test.rs"
 [features]
 default = []         # Earth-only
 shadow_epoch = []    # Enable Mars/Earth lockstep shadow run
@@ -53,3 +56,4 @@ bytemuck = { version = "1", features = ["derive"], optional = true }
 glam = { workspace = true }
 serde_json = "1.0.145"
 anyhow = "1.0.100"
+crossterm = "0.27"

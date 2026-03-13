@@ -29,6 +29,8 @@
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-ffi/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-query/src" isTestSource="false" />
       <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-world/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-collision/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/crates/riftphys-terrain/tests" isTestSource="true" />
       <excludeFolder url="file://$MODULE_DIR$/target" />
     </content>
     <orderEntry type="inheritedJdk" />

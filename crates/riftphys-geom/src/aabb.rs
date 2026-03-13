@@ -72,4 +72,9 @@ impl Aabb {
         let v = Vec3::splat(e);
         Aabb { min: self.min - v, max: self.max + v }
     }
+    pub fn intersects(&self, other: &Aabb) -> bool {
+        self.min.x <= other.max.x && self.max.x >= other.min.x &&
+            self.min.y <= other.max.y && self.max.y >= other.min.y &&
+            self.min.z <= other.max.z && self.max.z >= other.min.z
+    }
 }

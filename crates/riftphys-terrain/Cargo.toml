@@ -8,5 +8,8 @@ image = ["dep:image"]
 
 [dependencies]
 riftphys-core = { path = "../riftphys-core" }
+riftphys-materials = { path = "../riftphys-materials" }
+riftphys-collision = { path = "../riftphys-collision" }
+riftphys-geom = { path = "../riftphys-geom" }
 glam = { workspace = true }
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }

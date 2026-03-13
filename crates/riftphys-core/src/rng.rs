@@ -31,11 +31,12 @@ impl XorShift64 {
     /// Deterministic float in [0, 1).
     #[inline]
     pub fn next_f32_01(&mut self) -> f32 {
-        // Take top 24 bits for stable mantissa.
-        let u = (self.next_u32() >> 8) & 0x00FF_FFFF;
-        (u as f32) * (1.0 / 16_777_216.0) // 2^24
+        // Construct f32 from bits: sign 0, exponent 127, 23 bits of mantissa
+        // This gives a value in [1.0, 2.0), then subtract 1.0.
+        let u = self.next_u32();
+        let bits = (u >> 9) | 0x3f80_0000;
+        f32::from_bits(bits) - 1.0
     }
-
     /// Deterministic integer in [0, bound). bound must be > 0.
     #[inline]
     pub fn next_u32_bounded(&mut self, bound: u32) -> u32 {

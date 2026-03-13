@@ -1,8 +1,9 @@
-use glam::{Mat3A, Quat as GQuat, Vec3A};
+use glam::{Mat3A, Quat as GQuat, Vec3A, Vec3 as GVec3};
 use crate::Scalar;
 
 // Core math aliases (glam-backed).
-pub type Vec3 = Vec3A;
+pub type Vec3a = Vec3A;
+pub type Vec3 = GVec3;
 pub type Mat3 = Mat3A;
 
 // Canonical quaternion type for the whole codebase.

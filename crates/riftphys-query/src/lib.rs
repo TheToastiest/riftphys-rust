@@ -145,3 +145,38 @@ pub fn sweep_capsule_aabbs(
 ) -> Option<Hit> {
     sweep_two_spheres_aabbs(p_top0, v, radius, p_bot0, v, radius, aabbs, dt)
 }
+
+pub fn sweep_aabb_aabbs(
+    source: Aabb,
+    v: Vec3,
+    targets: &[Aabb],
+    dt: f32,
+) -> Option<Hit> {
+    if dt <= 0.0 { return None; }
+
+    let dir = v * dt;
+    let mut best: Option<Hit> = None;
+
+    // Calculate source half-extents to expand targets
+    let half_extents = (source.max - source.min) * 0.5;
+    let center0 = source.min + half_extents;
+
+    for (i, target) in targets.iter().enumerate() {
+        // Expand the target AABB by the source's dimensions (Minkowski Sum)
+        let expanded_target = Aabb {
+            min: target.min - half_extents,
+            max: target.max + half_extents,
+        };
+
+        // Reuse your existing high-stability slab raycaster
+        if let Some((t, n)) = ray_aabb_slab_unit(center0, dir, &expanded_target) {
+            best = pick_better(best, Hit {
+                toi: t,
+                normal: n,
+                target_index: i,
+                sample_kind: 0
+            });
+        }
+    }
+    best
+}

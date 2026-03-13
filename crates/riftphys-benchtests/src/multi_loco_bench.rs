@@ -13,7 +13,7 @@ use riftphys_geom::{MassProps};
 use riftphys_materials::materials::*;
 use glam::{UVec2, Vec2};
 use riftphys_terrain::HeightField;
-use riftphys_bench_helpers::bench_loco::loco_tick_with_heading;
+use riftphys_bench_helpers::bench_loco::{loco_tick_with_heading, PathKind, Walker};
 
 use riftphys_io::RigData;
 use riftphys_io::rig_physics::{PhysicsRig, humanoid_from_rig, load_into_world, RigMap};
@@ -21,91 +21,6 @@ use riftphys_io::rig_physics::{PhysicsRig, humanoid_from_rig, load_into_world, R
 use riftphys_locomotion::loco_state as loco;
 
 
-// Simple path patterns
-enum PathKind {
-    Straight { dir_ws: Vec3 },                          // walk in a straight line
-    Circle   { center: Vec3, radius: f32, ang_vel: f32, angle: f32 }, // walk around a circle
-}
-
-struct Walker {
-    pelvis: BodyId,
-    left:   BodyId,
-    right:  BodyId,
-
-    state:  loco::LocoState,
-    clocks: (loco::FootClock, loco::FootClock),
-    gait:   loco::GaitSpec,
-    path:   PathKind,
-}
-
-impl Walker {
-    fn step(&mut self, world: &mut world::World, dt: f32) {
-        // 1) Update desired heading from the path pattern
-        match &mut self.path {
-            PathKind::Straight { dir_ws } => {
-                let mut d = *dir_ws;
-                if d.length_squared() < 1.0e-12 {
-                    d = Vec3::new(1.0, 0.0, 0.0);
-                }
-                d = d.normalize();
-                // yaw in XZ plane
-                self.state.heading_yaw_rad = d.z.atan2(d.x);
-            }
-            PathKind::Circle { center, radius, ang_vel, angle } => {
-                *angle += *ang_vel * dt;
-
-                let r  = *radius;
-                let cx = center.x;
-                let cz = center.z;
-                let x  = cx + r * angle.cos();
-                let z  = cz + r * angle.sin();
-
-                let pos = world.get_body_pose(self.pelvis).pos;
-                let to_target = Vec3::new(x - pos.x, 0.0, z - pos.z);
-                let mut d = to_target;
-                if d.length_squared() < 1.0e-12 {
-                    d = Vec3::new(1.0, 0.0, 0.0);
-                }
-                d = d.normalize();
-                self.state.heading_yaw_rad = d.z.atan2(d.x);
-            }
-        }
-
-        // 2) Let planner advance clocks and stride
-        let directive = self.state.step_and_plan(dt);
-
-        let mut heading_dir = self.state.heading_dir();
-        if heading_dir.length_squared() < 1.0e-12 {
-            heading_dir = Vec3::new(1.0, 0.0, 0.0);
-        } else {
-            heading_dir = heading_dir.normalize();
-        }
-
-        let mut left_len  = directive.left_step_len;
-        let mut right_len = directive.right_step_len;
-        if left_len == 0.0 && right_len == 0.0 {
-            left_len  = self.gait.step_len;
-            right_len = self.gait.step_len;
-        }
-
-        // 3) Apply actual foot placements into the world
-        loco_tick_with_heading(
-            world,
-            self.pelvis.0,
-            self.left.0,
-            self.right.0,
-            &mut self.clocks,
-            &self.gait,
-            heading_dir,
-            left_len,
-            right_len,
-            dt,
-        );
-
-        self.state.left_clk  = self.clocks.0;
-        self.state.right_clk = self.clocks.1;
-    }
-}
 fn load_physics_rig(
     physics_path: &str,
     rig_json_fallback: Option<&str>,
@@ -136,6 +51,11 @@ fn spawn_walker_instance(
     println!("=== New humanoid ===");
     for (name, id) in map.body.iter() {
         println!("Body {:>3}: {:<16}", id.0, name);
+
+        // --- Deterministic Fix: Disable Sleep ---
+        // Force the body to remain awake so the locomotion
+        // logic and solver run every single tick.
+        world.set_body_sleep_allowed(*id, false);
     }
 
     let pelvis = *map
@@ -165,7 +85,11 @@ fn spawn_walker_instance(
     state.right_clk.t = state.left_clk.t + gait.stance_dur;
 
     let clocks = (state.left_clk, state.right_clk);
-
+    for (name, id) in map.body.iter() {
+        let inv_m = world.inv_mass_of(*id);
+        println!("Body {}: {} | inv_mass: {}", id.0, name, inv_m);
+        world.set_body_sleep_allowed(*id, false);
+    }
     Ok(Walker {
         pelvis,
         left,
@@ -175,6 +99,7 @@ fn spawn_walker_instance(
         gait,
         path,
     })
+
 }
 fn build_world(print_every: u32) -> (world::World, riftphys_terrain::HeightField) {
 
@@ -233,7 +158,7 @@ fn build_world(print_every: u32) -> (world::World, riftphys_terrain::HeightField
                 heights.push(amp * (k * wx).sin() * (k * wz).cos());
             }
         }
-        HeightField::from_heights(dims, cellv, heights)
+        HeightField::from_heights(dims, cellv, heights, MaterialId::Default)
     }
 
     let hf = make_sine_hf(256, 256, 0.5, 0.25, 0.15);

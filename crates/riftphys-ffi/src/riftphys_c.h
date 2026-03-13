@@ -186,7 +186,7 @@ RPhysResult rphys_world_clear_heightfield(RPhysWorld* world);
 /* ===================== API ===================== */
 
 // lifecycle
-RPhysWorld*  rphys_world_create(uint32_t max_bodies, uint32_t max_colliders);
+RPhysWorld* rphys_world_create(uint32_t max_bodies, uint32_t max_colliders);
 void         rphys_world_destroy(RPhysWorld* world);
 RPhysResult  rphys_world_set_epoch(RPhysWorld* world, uint64_t epoch);
 RPhysResult  rphys_world_set_rng_seed(RPhysWorld* world, uint64_t seed);
@@ -220,6 +220,32 @@ RPhysResult  rphys_world_capsule_sweep(const RPhysWorld* world, const RPhysCapsu
 
 // Last Error Copy
 RPhysResult rphys_last_error_copy(char* dst, uint32_t cap, uint32_t* out_len);
+
+/* ===================== KINEMATIC PLAYER CONTROLLER ===================== */
+
+typedef struct RPhysPlayerDesc {
+    RPhysIsometry start_pose;
+    float radius;
+    float height;
+    float speed;
+} RPhysPlayerDesc;
+
+// Returns a 0-based player_idx (not a standard body_id)
+RPhysResult rphys_add_player(RPhysWorld* world, const RPhysPlayerDesc* desc, uint32_t* out_player_idx);
+
+// Feeds WASD input direction to the player for the next frame
+RPhysResult rphys_player_set_input(RPhysWorld* world, uint32_t player_idx, RPhysVec3 move_dir);
+
+// Retrieves the resulting pose after physics step, and whether the player is touching the ground
+RPhysResult rphys_player_get_pose(const RPhysWorld* world, uint32_t player_idx, RPhysIsometry* out_pose, RPhysBool* out_grounded);
+
+/* ===================== ROLLBACK / SNAPSHOTS ===================== */
+
+typedef struct RPhysWorldSnapshot RPhysWorldSnapshot;
+
+RPhysWorldSnapshot* rphys_world_snapshot_create(const RPhysWorld* world);
+RPhysResult         rphys_world_snapshot_restore(RPhysWorld* world, const RPhysWorldSnapshot* snapshot);
+void                rphys_world_snapshot_free(RPhysWorldSnapshot* snapshot);
 
 #ifdef __cplusplus
 }

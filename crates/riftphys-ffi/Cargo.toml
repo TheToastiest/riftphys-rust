@@ -5,12 +5,14 @@ edition = "2021"
 publish = false
 
 [lib]
-crate-type = ["cdylib", "rlib"]
+# THE FIX: 'staticlib' outputs a .lib/.a file to compile directly into your C/C++ engine
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 riftphys-world     = { path = "../riftphys-world" }
 riftphys-core      = { path = "../riftphys-core" }
 riftphys-geom      = { path = "../riftphys-geom" }
+riftphys-collision = { path = "../riftphys-collision" }
 riftphys-materials = { path = "../riftphys-materials" }
-riftphys-terrain = { path = "../riftphys-terrain" }
-glam   = { workspace = true, default-features = false, features = ["std"] }
+riftphys-terrain   = { path = "../riftphys-terrain" }
+glam               = { workspace = true, default-features = false, features = ["std"] }

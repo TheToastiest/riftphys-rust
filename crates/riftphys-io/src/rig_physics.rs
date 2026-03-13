@@ -243,7 +243,6 @@ pub fn humanoid_from_rig(rig: &RigData) -> Result<PhysicsRig> {
         return Err(anyhow!("skin {} has zero joints", rig.skin_index));
     }
 
-    // Build node index -> parent node index map.
     let all_nodes: Vec<gltf::Node<'_>> = gltf.document.nodes().collect();
     let mut parent_of: Vec<Option<usize>> = vec![None; all_nodes.len()];
     for n in &all_nodes {
@@ -252,7 +251,6 @@ pub fn humanoid_from_rig(rig: &RigData) -> Result<PhysicsRig> {
         }
     }
 
-    // Global matrices for each joint node (deterministic).
     let mut global: Vec<Mat4> = vec![Mat4::IDENTITY; joint_nodes.len()];
     for (i, n) in joint_nodes.iter().enumerate() {
         let mut m = Mat4::from_cols_array_2d(&n.transform().matrix());
@@ -270,196 +268,85 @@ pub fn humanoid_from_rig(rig: &RigData) -> Result<PhysicsRig> {
         .map(|n| n.name().unwrap_or("").to_string())
         .collect();
 
-    // pelvis
-    let pelvis = names
-        .iter()
-        .position(|n| {
-            let c = canon(n);
-            c.contains("pelvis") || c.contains("hips")
-        })
-        .unwrap_or_else(|| 1.min(names.len().saturating_sub(1)));
+    // --- Identification ---
+    let pelvis = names.iter().position(|n| {
+        let c = canon(n);
+        c.contains("pelvis") || c.contains("hips")
+    }).unwrap_or_else(|| 1.min(names.len().saturating_sub(1)));
 
-    // left chain
-    let l_thigh = find_idx(&names, Some('l'), &["thigh"])
-        .or_else(|| find_idx(&names, Some('l'), &["upleg"]))
-        .ok_or_else(|| anyhow!("left thigh not found"))?;
+    let l_thigh = find_idx(&names, Some('l'), &["thigh"]).or_else(|| find_idx(&names, Some('l'), &["upleg"])).ok_or_else(|| anyhow!("l_thigh missing"))?;
+    let l_shank = find_idx(&names, Some('l'), &["calf"]).or_else(|| find_idx(&names, Some('l'), &["shin"])).ok_or_else(|| anyhow!("l_shank missing"))?;
+    let l_foot  = find_idx(&names, Some('l'), &["foot"]).ok_or_else(|| anyhow!("l_foot missing"))?;
 
-    let l_shank = find_idx(&names, Some('l'), &["calf"])
-        .or_else(|| find_idx(&names, Some('l'), &["shin"]))
-        .or_else(|| find_idx(&names, Some('l'), &["leg"]))
-        .ok_or_else(|| anyhow!("left shank not found"))?;
+    let r_thigh = find_idx(&names, Some('r'), &["thigh"]).or_else(|| find_idx(&names, Some('r'), &["upleg"])).ok_or_else(|| anyhow!("r_thigh missing"))?;
+    let r_shank = find_idx(&names, Some('r'), &["calf"]).or_else(|| find_idx(&names, Some('r'), &["shin"])).ok_or_else(|| anyhow!("r_shank missing"))?;
+    let r_foot  = find_idx(&names, Some('r'), &["foot"]).ok_or_else(|| anyhow!("r_foot missing"))?;
 
-    let l_foot = find_idx(&names, Some('l'), &["foot"])
-        .or_else(|| find_idx(&names, Some('l'), &["ball"]))
-        .ok_or_else(|| anyhow!("left foot not found"))?;
+    // Hand nodes for Melee
+    let l_hand  = find_idx(&names, Some('l'), &["hand"]).or_else(|| find_idx(&names, Some('l'), &["wrist"])).ok_or_else(|| anyhow!("l_hand missing"))?;
+    let r_hand  = find_idx(&names, Some('r'), &["hand"]).or_else(|| find_idx(&names, Some('r'), &["wrist"])).ok_or_else(|| anyhow!("r_hand missing"))?;
 
-    // right chain
-    let r_thigh = find_idx(&names, Some('r'), &["thigh"])
-        .or_else(|| find_idx(&names, Some('r'), &["upleg"]))
-        .ok_or_else(|| anyhow!("right thigh not found"))?;
-
-    let r_shank = find_idx(&names, Some('r'), &["calf"])
-        .or_else(|| find_idx(&names, Some('r'), &["shin"]))
-        .or_else(|| find_idx(&names, Some('r'), &["leg"]))
-        .ok_or_else(|| anyhow!("right shank not found"))?;
-
-    let r_foot = find_idx(&names, Some('r'), &["foot"])
-        .or_else(|| find_idx(&names, Some('r'), &["ball"]))
-        .ok_or_else(|| anyhow!("right foot not found"))?;
-
-    // Joint positions from global matrices.
+    // --- Transforms ---
     let p = |i: usize| -> GVec3 {
         let m = global[i];
         GVec3::new(m.w_axis.x, m.w_axis.y, m.w_axis.z)
     };
-
-    // Segment lengths (delta-independent).
     let seg_len = |a: usize, b: usize| -> f32 { (p(b) - p(a)).length().max(0.15) };
 
-    // Optional deterministic repositioning (keeps old demo expectations).
-    let pelvis_pos = p(pelvis);
     let target_ws = GVec3::new(0.0, 1.20, 0.50);
-    let delta = target_ws - pelvis_pos;
+    let delta = target_ws - p(pelvis);
     let pw = |i: usize| -> GVec3 { p(i) + delta };
 
-    let lt_len = seg_len(l_thigh, l_shank);
-    let ls_len = seg_len(l_shank, l_foot);
-    let rt_len = seg_len(r_thigh, r_shank);
-    let rs_len = seg_len(r_shank, r_foot);
-
+    // --- Build PhysicsRig ---
     let links = vec![
-        LinkDef {
-            name: "pelvis".into(),
-            mass: 12.0,
-            shape: ColliderShape::Capsule { r: 0.15, hh: 0.35 },
-            pose_ws: pack_iso_q(pw(pelvis), GQuat::IDENTITY),
-            material: MaterialId::Default,
-        },
-        LinkDef {
-            name: "l_thigh".into(),
-            mass: 7.0,
-            shape: ColliderShape::Capsule { r: 0.09, hh: lt_len * 0.5 },
-            pose_ws: pack_iso_q(pw(l_thigh), GQuat::IDENTITY),
-            material: MaterialId::Default,
-        },
-        LinkDef {
-            name: "l_shank".into(),
-            mass: 4.5,
-            shape: ColliderShape::Capsule { r: 0.08, hh: ls_len * 0.5 },
-            pose_ws: pack_iso_q(pw(l_shank), GQuat::IDENTITY),
-            material: MaterialId::Default,
-        },
-        LinkDef {
-            name: "l_foot".into(),
-            mass: 2.0,
-            shape: ColliderShape::Capsule { r: 0.05, hh: 0.12 },
-            pose_ws: pack_iso_q(
-                pw(l_foot),
-                GQuat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
-            ),
-            material: MaterialId::Default,
-        },
-        LinkDef {
-            name: "r_thigh".into(),
-            mass: 7.0,
-            shape: ColliderShape::Capsule { r: 0.09, hh: rt_len * 0.5 },
-            pose_ws: pack_iso_q(pw(r_thigh), GQuat::IDENTITY),
-            material: MaterialId::Default,
-        },
-        LinkDef {
-            name: "r_shank".into(),
-            mass: 4.5,
-            shape: ColliderShape::Capsule { r: 0.08, hh: rs_len * 0.5 },
-            pose_ws: pack_iso_q(pw(r_shank), GQuat::IDENTITY),
-            material: MaterialId::Default,
-        },
-        LinkDef {
-            name: "r_foot".into(),
-            mass: 2.0,
-            shape: ColliderShape::Capsule { r: 0.05, hh: 0.12 },
-            pose_ws: pack_iso_q(
-                pw(r_foot),
-                GQuat::from_rotation_z(-std::f32::consts::FRAC_PI_2),
-            ),
-            material: MaterialId::Default,
-        },
+        LinkDef { name: "pelvis".into(), mass: 12.0, shape: ColliderShape::Capsule { r: 0.15, hh: 0.35 }, pose_ws: pack_iso_q(pw(pelvis), GQuat::IDENTITY), material: MaterialId::Default },
+
+        LinkDef { name: "l_thigh".into(), mass: 7.0, shape: ColliderShape::Capsule { r: 0.09, hh: seg_len(l_thigh, l_shank)*0.5 }, pose_ws: pack_iso_q(pw(l_thigh), GQuat::IDENTITY), material: MaterialId::Default },
+        LinkDef { name: "l_shank".into(), mass: 4.5, shape: ColliderShape::Capsule { r: 0.08, hh: seg_len(l_shank, l_foot)*0.5 }, pose_ws: pack_iso_q(pw(l_shank), GQuat::IDENTITY), material: MaterialId::Default },
+        LinkDef { name: "l_foot".into(),  mass: 2.0, shape: ColliderShape::Capsule { r: 0.05, hh: 0.12 }, pose_ws: pack_iso_q(pw(l_foot), GQuat::from_rotation_z(-std::f32::consts::FRAC_PI_2)), material: MaterialId::Default },
+
+        LinkDef { name: "r_thigh".into(), mass: 7.0, shape: ColliderShape::Capsule { r: 0.09, hh: seg_len(r_thigh, r_shank)*0.5 }, pose_ws: pack_iso_q(pw(r_thigh), GQuat::IDENTITY), material: MaterialId::Default },
+        LinkDef { name: "r_shank".into(), mass: 4.5, shape: ColliderShape::Capsule { r: 0.08, hh: seg_len(r_shank, r_foot)*0.5 }, pose_ws: pack_iso_q(pw(r_shank), GQuat::IDENTITY), material: MaterialId::Default },
+        LinkDef { name: "r_foot".into(),  mass: 2.0, shape: ColliderShape::Capsule { r: 0.05, hh: 0.12 }, pose_ws: pack_iso_q(pw(r_foot), GQuat::from_rotation_z(-std::f32::consts::FRAC_PI_2)), material: MaterialId::Default },
+
+        // Melee Anchor Points
+        LinkDef { name: "l_hand".into(),  mass: 1.5, shape: ColliderShape::Sphere { r: 0.06 }, pose_ws: pack_iso_q(pw(l_hand), GQuat::IDENTITY), material: MaterialId::Default },
+        LinkDef { name: "r_hand".into(),  mass: 1.5, shape: ColliderShape::Sphere { r: 0.06 }, pose_ws: pack_iso_q(pw(r_hand), GQuat::IDENTITY), material: MaterialId::Default },
     ];
 
     let ziso = pack_iso_q(GVec3::ZERO, GQuat::IDENTITY);
-    let joints = vec![
-        JointDef::Ball {
-            name: "l_hip".into(),
-            parent: "pelvis".into(),
-            child: "l_thigh".into(),
-            frame_a: ziso,
-            frame_b: ziso,
-            limits: Some(BallLimits {
-                swing_y: [-0.6, 0.8],
-                swing_z: [-0.4, 0.6],
-                twist: [-0.8, 0.8],
-            }),
-            drives: None,
-        },
-        JointDef::Hinge {
-            name: "l_knee".into(),
-            parent: "l_thigh".into(),
-            child: "l_shank".into(),
-            hinge_axis: 2,
-            frame_a: ziso,
-            frame_b: ziso,
-            limit: Some([0.0, 2.2]),
-            drive: None,
-        },
-        JointDef::Ball {
-            name: "l_ankle".into(),
-            parent: "l_shank".into(),
-            child: "l_foot".into(),
-            frame_a: ziso,
-            frame_b: ziso,
-            limits: Some(BallLimits {
-                swing_y: [-0.6, 0.6],
-                swing_z: [-0.4, 0.4],
-                twist: [-0.5, 0.5],
-            }),
-            drives: None,
-        },
-        JointDef::Ball {
-            name: "r_hip".into(),
-            parent: "pelvis".into(),
-            child: "r_thigh".into(),
-            frame_a: ziso,
-            frame_b: ziso,
-            limits: Some(BallLimits {
-                swing_y: [-0.6, 0.8],
-                swing_z: [-0.4, 0.6],
-                twist: [-0.8, 0.8],
-            }),
-            drives: None,
-        },
-        JointDef::Hinge {
-            name: "r_knee".into(),
-            parent: "r_thigh".into(),
-            child: "r_shank".into(),
-            hinge_axis: 2,
-            frame_a: ziso,
-            frame_b: ziso,
-            limit: Some([0.0, 2.2]),
-            drive: None,
-        },
-        JointDef::Ball {
-            name: "r_ankle".into(),
-            parent: "r_shank".into(),
-            child: "r_foot".into(),
-            frame_a: ziso,
-            frame_b: ziso,
-            limits: Some(BallLimits {
-                swing_y: [-0.6, 0.6],
-                swing_z: [-0.4, 0.4],
-                twist: [-0.5, 0.5],
-            }),
-            drives: None,
-        },
+
+    // Changed to `mut` so we can dynamically add the shoulders
+    let mut joints = vec![
+        JointDef::Ball { name: "l_hip".into(), parent: "pelvis".into(), child: "l_thigh".into(), frame_a: ziso, frame_b: ziso, limits: Some(BallLimits { swing_y: [-0.6, 0.8], swing_z: [-0.4, 0.6], twist: [-0.8, 0.8] }), drives: None },
+        JointDef::Hinge { name: "l_knee".into(), parent: "l_thigh".into(), child: "l_shank".into(), hinge_axis: 2, frame_a: ziso, frame_b: ziso, limit: Some([0.0, 2.2]), drive: None },
+        JointDef::Ball { name: "l_ankle".into(), parent: "l_shank".into(), child: "l_foot".into(), frame_a: ziso, frame_b: ziso, limits: Some(BallLimits { swing_y: [-0.6, 0.6], swing_z: [-0.4, 0.4], twist: [-0.5, 0.5] }), drives: None },
+
+        JointDef::Ball { name: "r_hip".into(), parent: "pelvis".into(), child: "r_thigh".into(), frame_a: ziso, frame_b: ziso, limits: Some(BallLimits { swing_y: [-0.6, 0.8], swing_z: [-0.4, 0.6], twist: [-0.8, 0.8] }), drives: None },
+        JointDef::Hinge { name: "r_knee".into(), parent: "r_thigh".into(), child: "r_shank".into(), hinge_axis: 2, frame_a: ziso, frame_b: ziso, limit: Some([0.0, 2.2]), drive: None },
+        JointDef::Ball { name: "r_ankle".into(), parent: "r_shank".into(), child: "r_foot".into(), frame_a: ziso, frame_b: ziso, limits: Some(BallLimits { swing_y: [-0.6, 0.6], swing_z: [-0.4, 0.4], twist: [-0.5, 0.5] }), drives: None },
     ];
+
+    // FIX: Attach the hands to the pelvis so they don't fall to the floor
+    joints.push(JointDef::Ball {
+        name: "l_shoulder".into(),
+        parent: "pelvis".into(),
+        child: "l_hand".into(),
+        frame_a: pack_iso_q(pw(l_hand) - pw(pelvis), GQuat::IDENTITY),
+        frame_b: ziso,
+        limits: None,
+        drives: None,
+    });
+
+    joints.push(JointDef::Ball {
+        name: "r_shoulder".into(),
+        parent: "pelvis".into(),
+        child: "r_hand".into(),
+        frame_a: pack_iso_q(pw(r_hand) - pw(pelvis), GQuat::IDENTITY),
+        frame_b: ziso,
+        limits: None,
+        drives: None,
+    });
 
     Ok(PhysicsRig { links, joints })
 }
@@ -574,5 +461,55 @@ fn name_of(j: &JointDef) -> &String {
         JointDef::Ball { name, .. } => name,
         JointDef::Hinge { name, .. } => name,
         JointDef::D6 { name, .. } => name,
+    }
+}
+
+/// Procedural weapon attachment specification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeaponLink {
+    /// Hand to attach to ("l_hand" or "r_hand").
+    pub hand_node_name: String,
+    /// Weapon name (e.g., "stick_l").
+    pub weapon_name: String,
+    /// Dimensions: [radius, half_height].
+    pub dimensions: [f32; 2],
+    /// Local offset from hand center.
+    pub offset: [f32; 3],
+}
+
+impl PhysicsRig {
+    /// Procedurally adds a weapon "stick" to the rig by finding the appropriate hand nodes.
+    pub fn with_weapon(mut self, weapon: WeaponLink) -> Self {
+        // 1. Define the Weapon Link
+        let weapon_link = LinkDef {
+            name: weapon.weapon_name.clone(),
+            mass: 2.0, // Solid 2kg hitting force
+            shape: ColliderShape::Capsule {
+                r: weapon.dimensions[0],
+                hh: weapon.dimensions[1]
+            },
+            // Initial pose is relative; load_into_world handles final WS
+            pose_ws: pack_iso_q(GVec3::from_slice(&weapon.offset), GQuat::IDENTITY),
+            material: MaterialId::Default,
+        };
+
+        // 2. Define the Weld (Fixed D6 Joint)
+        let weld = JointDef::D6 {
+            name: format!("{}_weld", weapon.weapon_name),
+            parent: weapon.hand_node_name,
+            child: weapon.weapon_name,
+            frame_a: pack_iso_q(GVec3::ZERO, GQuat::IDENTITY),
+            frame_b: pack_iso_q(GVec3::ZERO, GQuat::IDENTITY),
+            t_enabled: [true, true, true], // Locked
+            r_enabled: [true, true, true], // Locked
+            t_limit: None,
+            r_limit: None,
+            t_drive: None,
+            r_drive: None,
+        };
+
+        self.links.push(weapon_link);
+        self.joints.push(weld);
+        self
     }
 }

@@ -1,53 +1,33 @@
-# RiftPhys — Deterministic Physics Core (Phase-20 Public Release)
+# RiftPhys v2.0
 
-**RiftPhys** is a data-oriented, deterministic physics stack powering the RiftForged project.  
-This public release captures the Phase 0–20 milestone: determinism contracts, stepper, CCD, basic contact models, controllers (Guard/Balance), terrain sampling, aero/prop scaffolding, vehicles v1, epoch shadowing, rig I/O + hashing, and **Phase-20 contact polish (deterministic culling, quantization, warmstart cache)**.
+**RiftPhys** is a high-performance, strictly deterministic 3D physics engine written in Rust, featuring a robust C/C++ Foreign Function Interface (FFI). It is designed from the ground up for authoritative server architectures and rollback networking.
 
-> **Licensing:**  
-> Public code in this branch is **dual-licensed** under **MIT OR Apache-2.0** (your choice).  
-> Phases 21+ and the full game stack are **proprietary** and live in private branches/crates.
+Version 2.0 marks the transition from the experimental V1.0 (MIT) to a proprietary, production-ready architecture powering the RiftForged MMO ARPG.
 
----
+## Key Features
 
-## Highlights (Phase-20)
-- **Determinism Contract:** fixed `Δt`, `f32` (no fast-math), fixed iteration counts, stable sort keys.
-- **Stepper & CCD:** semi-implicit Euler; sphere/capsule CCD; deterministic broadphase/narrowphase.
-- **Contacts:** deterministic selection (≤4 per pair), normal/depth quantization, **warmstart cache**.
-- **Epochs & Shadowing:** hot-swap gravity/model sets at tick boundaries with **epoch IDs**; epsilon compare.
-- **Controllers:** Guard/Brace & Balance (deterministic support polygon).
-- **Terrain:** height/normal sampling with deterministic tile cache.
-- **Aero/Prop:** model registry; throttle & area refs (Phase-11 scaffolding).
-- **Vehicles v1:** basic pre-step host hooks.
-- **Rig I/O tools:** `rig_hash` (stable `.rig.json` + blake3), `rig_diff` (epsilon compare).
-- **Benches:** perf (p50/p95/p99), soak tests, JSONL telemetry.
+* **Strict Determinism:** Guaranteed cross-platform deterministic execution. Hashes computed at the end of every tick will match bit-for-bit across all clients and the server, enabling reliable client-side prediction and server reconciliation.
+* **O(1) Heightfield Terrain:** Highly optimized spatial grid lookups for heightfield terrain. V2.0 introduces robust local-to-world origin transformations, allowing for off-center map boundaries and infinite negative/positive axis traversal without OOB memory panics.
+* **Snapshot & Rollback:** Zero-allocation state saving and restoration. The engine can instantly capture the exact state of all rigid bodies, colliders, and kinematic controllers, and restore them for lag compensation and rollback.
+* **Kinematic Player Controllers:** Built-in player controllers with collision geometry (capsules), continuous collision detection, and slope-handling parameters, exposed directly to the FFI.
+* **Bulletproof FFI Boundary:** Strict ABI contract utilizing 1-based indexing to prevent zero-index null pointer errors, with explicit terrain sentinel handling.
 
----
+## Architecture Guidelines
 
-## Workspace & Crates
-- `crates/riftphys-core` — math/types/IDs, hashing, step context.
-- `crates/riftphys-world` — SoA bodies, collision, solver, controllers, epoch plumbing.
-- `crates/riftphys-io` — `rig_hash`, `rig_diff`.
-- `crates/riftphys-locomotion` — minimal gait primitives.
-- `crates/riftphys-benchtests` — perf & determinism benches, epoch shadowing harness.
-- (Other support crates as present: gravity, terrain, vehicles, viz, etc.)
+RiftPhys operates on a "build architecture before building code" philosophy. When interfacing with the engine via C/C++:
 
----
+1. **Memory Ownership:** The Rust FFI owns the FFI memory. Host applications must handle structural layouts accurately. Never pass dangling pointers (e.g., stack-allocated `std::vector` data) into persistent functions like `rphys_world_set_heightfield`.
+2. **Zero-Initialization:** Always zero-initialize structs passed to the FFI (e.g., `RPhysStepParams params{};`). Uninitialized stack memory containing garbage data will instantly break determinism.
+3. **Deterministic Inputs:** Input forces and player intents must be applied at the exact same tick index on both the client and the authoritative server.
 
-## Build & Run
-```bash
-# build everything
-cargo build --workspace
+## Building and Linking (Windows/MSVC)
 
-# run perf bench (adjust TICKS/DT as needed)
-cargo run -p riftphys-benchtests --bin bench_perfs --release
+When integrating the RiftPhys static library (`riftphys.lib`) into a C++ Windows environment, you must link the underlying Rust dependencies. Add the following pragmas to your host application:
 
-# run the Phase 12–20 bench with epoch shadowing
-cargo run -p riftphys-benchtests --bin riftphys-benchtests
+```cpp
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "userenv.lib")
+#pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "ntdll.lib")
 
-
-Common env knobs
-
-RPHYS_TICKS=600 — tick count
-RPHYS_DT=0.0083333 — fixed Δt (120 Hz)
-RPHYS_PRINT_EVERY=20 — debug cadence
-RPHYS_PROMOTE_AFTER=180 — shadow promotion window (ticks)

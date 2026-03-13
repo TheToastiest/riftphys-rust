@@ -251,7 +251,7 @@ fn build_world(args: &Args) -> Scene {
             cl_per_rad: 5.5,
             stall_rad: 0.8,
             area_m2: 0.5,
-            lift_dir_body: Vec3::Y,
+            lift_dir_body: Vec3::Y.into(),
             isa: ISA::default(),
             cd0: 0.02,
             k_induced: 0.05,

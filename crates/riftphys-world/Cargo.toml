@@ -21,3 +21,4 @@ riftphys-vehicles = { path = "../riftphys-vehicles" }
 
 glam               = { workspace = true }
 blake3 = "1.8.2"
+rayon = "1.11.0"

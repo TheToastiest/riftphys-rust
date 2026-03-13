@@ -164,4 +164,32 @@ impl MassProps {
         let rho = phys_props(mat).density;
         Self::from_capsule_density(radius, half_h, rho)
     }
+    #[inline]
+    pub fn from_cylinder_density(radius: f32, half_h: f32, density: f32) -> Self {
+        let r = radius.abs();
+        let hh = half_h.abs();
+        let rho = density;
+
+        if !(Self::valid_positive(r) && rho.is_finite() && rho > 0.0) {
+            return Self::infinite();
+        }
+
+        let h = hh * 2.0; // Total length
+        let r2 = r * r;
+
+        let vol = core::f32::consts::PI * r2 * h;
+        let m = rho * vol;
+
+        // Inertia tensor for a cylinder along the Y-axis
+        let iy = 0.5 * m * r2;
+        let ixz = (1.0 / 12.0) * m * (3.0 * r2 + h * h);
+
+        Self::finalize(m, Vec3::new(ixz, iy, ixz))
+    }
+
+    #[inline]
+    pub fn from_cylinder(radius: f32, half_h: f32, mat: MaterialId) -> Self {
+        let rho = phys_props(mat).density;
+        Self::from_cylinder_density(radius, half_h, rho)
+    }
 }

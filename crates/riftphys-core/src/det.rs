@@ -6,7 +6,10 @@ pub const Q6: Scalar = 1.0e-6;
 
 #[inline]
 pub fn q6(x: Scalar) -> Scalar {
-    (x * 1.0e6_f32).round() * 1.0e-6_f32
+    if !x.is_finite() { return 0.0; } // Deterministic fallback
+    // Use trunc/fractional split if worried about extreme precision,
+    // but round is generally stable for simulation ranges.
+    (x / Q6).round() * Q6
 }
 
 #[inline]
@@ -27,21 +30,24 @@ pub fn safe_contact_dist(cd: Scalar) -> Scalar {
 }
 
 #[inline]
-pub fn quat_canonical(mut q: Quat) -> Quat {
-    // q and -q represent the same rotation; canonicalize sign so hashing/compare is stable
-    q = q.normalize();
-    if q.w < 0.0 {
-        q = Quat::from_xyzw(-q.x, -q.y, -q.z, -q.w);
+pub fn quat_canonical(q: Quat) -> Quat {
+    // Standardizing on the "W is positive" or "First non-zero is positive"
+    if q.w < 0.0 || (q.w == 0.0 && (q.z < 0.0 || (q.z == 0.0 && (q.y < 0.0 || (q.y == 0.0 && q.x < 0.0))))) {
+        -q
+    } else {
+        q
     }
-    q
 }
 
 #[inline]
 pub fn q6_quat(q: Quat) -> Quat {
-    let q = quat_canonical(q);
-    let q = Quat::from_xyzw(q6(q.x), q6(q.y), q6(q.z), q6(q.w));
-    let q = quat_canonical(q);
-    Quat::from_xyzw(q6(q.x), q6(q.y), q6(q.z), q6(q.w))
+    let mut c = quat_canonical(q);
+    c.x = q6(c.x);
+    c.y = q6(c.y);
+    c.z = q6(c.z);
+    c.w = q6(c.w);
+    // Re-normalize and re-canonicalize to ensure it stays on the hypersphere
+    quat_canonical(c.normalize())
 }
 
 #[inline]

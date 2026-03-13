@@ -18,13 +18,14 @@ fn q6v(v: Vec3) -> Vec3 {
 fn normalize_q6(v: Vec3) -> Vec3 {
     let v = q6v(v);
     let len2 = v.length_squared();
-    if !len2.is_finite() || len2 <= 1.0e-20 {
-        return Vec3::ZERO;
+    if len2 > 1.0e-12 {
+        q6v(v * (1.0 / len2.sqrt()))
+    } else {
+        Vec3::ZERO
     }
-    q6v(v * (1.0 / len2.sqrt()))
 }
 
-/* ─────────────────────────  Distance Joint (kept, hardened) ─────────────────── */
+/* ─────────────────────────  Distance Joint ─────────────────── */
 
 #[derive(Copy, Clone, Debug)]
 pub struct DistanceJoint {
@@ -34,14 +35,14 @@ pub struct DistanceJoint {
     pub compliance: Scalar,
 }
 
-/* ─────────────────────────  D6 types (translation + rotation rows) ──────────── */
+/* ─────────────────────────  D6 types ──────────── */
 
 #[derive(Copy, Clone, Debug, Default)]
 pub struct Drive {
-    pub target: Scalar,      // position target (m or rad) if vel_mode=false; velocity target if vel_mode=true (bias)
-    pub kp: Scalar,          // currently unused in this minimal XPBD pass
-    pub kd: Scalar,          // currently unused in this minimal XPBD pass
-    pub max_impulse: Scalar, // currently unused in this minimal XPBD pass
+    pub target: Scalar,
+    pub kp: Scalar,
+    pub kd: Scalar,
+    pub max_impulse: Scalar,
     pub vel_mode: bool,
 }
 
@@ -53,11 +54,11 @@ pub struct Limit {
 
 #[derive(Copy, Clone, Debug)]
 pub struct D6Axis {
-    pub enabled: bool,           // "row active"
-    pub compliance: Scalar,      // XPBD compliance (0 => rigid)
-    pub drive: Option<Drive>,    // optional motor/servo
-    pub limit: Option<Limit>,    // optional min/max
-    pub lambda_acc: Scalar,      // XPBD accumulated lambda (warmstart + compliance term)
+    pub enabled: bool,
+    pub compliance: Scalar,
+    pub drive: Option<Drive>,
+    pub limit: Option<Limit>,
+    pub lambda_acc: Scalar,
 }
 
 impl Default for D6Axis {
@@ -78,8 +79,8 @@ pub struct Generic6Dof {
     pub b: BodyId,
     pub fa: Isometry,
     pub fb: Isometry,
-    pub t: [D6Axis; 3], // Tx, Ty, Tz
-    pub r: [D6Axis; 3], // Rx, Ry, Rz
+    pub t: [D6Axis; 3],
+    pub r: [D6Axis; 3],
 }
 
 /* ─────────────────────────  Joint union + container ─────────────────────────── */
@@ -99,9 +100,18 @@ impl Joints {
     pub fn new() -> Self {
         Self { kinds: Vec::new() }
     }
-
-    /* Distance */
-
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.kinds.is_empty()
+    }
+    #[inline]
+    pub fn kinds(&self) -> &[JointKind] {
+        &self.kinds
+    }
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.kinds.len()
+    }
     pub fn set_distance_params(&mut self, id: JointId, rest: f32, compliance: f32) {
         if let Some(JointKind::Distance(ref mut j)) = self.kinds.get_mut(id.0 as usize) {
             j.rest = q6(rest);
@@ -119,41 +129,31 @@ impl Joints {
         JointId((self.kinds.len() as u32) - 1)
     }
 
-    /* D6 + presets */
-
     pub fn add_d6(&mut self, j: Generic6Dof) -> JointId {
         self.kinds.push(JointKind::D6(j));
         JointId((self.kinds.len() as u32) - 1)
     }
 
-    /// Ball joint: lock translation, leave rotation free by default.
-    /// (You can enable r-axes later if you add limits/drives.)
     pub fn add_ball(&mut self, a: BodyId, b: BodyId, fa: Isometry, fb: Isometry) -> JointId {
         let mut j = Generic6Dof { a, b, fa, fb, t: Default::default(), r: Default::default() };
-        for ax in 0..3 { j.t[ax].enabled = true; }  // lock Tx/Ty/Tz to 0
-        for ax in 0..3 { j.r[ax].enabled = false; } // free rotations
+        for ax in 0..3 { j.t[ax].enabled = true; }
+        for ax in 0..3 { j.r[ax].enabled = false; }
         self.add_d6(j)
     }
 
-    /// Hinge: lock translation, lock two rotation axes, leave hinge axis free unless you set a limit/drive.
-    /// hinge_axis = 0->Rx, 1->Ry, 2->Rz
     pub fn add_hinge(&mut self, a: BodyId, b: BodyId, fa: Isometry, fb: Isometry, hinge_axis: usize) -> JointId {
         let mut j = Generic6Dof { a, b, fa, fb, t: Default::default(), r: Default::default() };
         for ax in 0..3 { j.t[ax].enabled = true; }
-        for ax in 0..3 { j.r[ax].enabled = ax != hinge_axis; } // lock non-hinge axes
-        // hinge axis stays free unless you later enable it with a limit/drive
+        for ax in 0..3 { j.r[ax].enabled = ax != hinge_axis; }
         self.add_d6(j)
     }
 
-    /// Universal: lock translation, lock exactly one rotation axis (the one not in ax0/ax1).
     pub fn add_universal(&mut self, a: BodyId, b: BodyId, fa: Isometry, fb: Isometry, ax0: usize, ax1: usize) -> JointId {
         let mut j = Generic6Dof { a, b, fa, fb, t: Default::default(), r: Default::default() };
         for ax in 0..3 { j.t[ax].enabled = true; }
-        for ax in 0..3 { j.r[ax].enabled = !(ax == ax0 || ax == ax1); } // lock the remaining axis
+        for ax in 0..3 { j.r[ax].enabled = !(ax == ax0 || ax == ax1); }
         self.add_d6(j)
     }
-
-    /* D6 setters (setting a drive/limit auto-activates that row) */
 
     pub fn set_d6_drive_t(&mut self, id: JointId, axis: usize, d: Option<Drive>) {
         if let Some(JointKind::D6(ref mut j)) = self.kinds.get_mut(id.0 as usize) {
@@ -182,8 +182,6 @@ impl Joints {
             if j.r[axis].limit.is_some() { j.r[axis].enabled = true; }
         }
     }
-
-    /* Main solve (XPBD positional) */
 
     pub fn solve(&mut self, bodies: &mut Bodies, dt: Scalar, iterations: u32) {
         if self.kinds.is_empty() { return; }
@@ -240,13 +238,12 @@ fn solve_distance_row(bodies: &mut Bodies, j: &DistanceJoint, dt: Scalar, dt2: S
     let denom = q6(w_sum + alpha);
     if denom <= 0.0 { return; }
 
-    // Minimal XPBD (no lambda accumulator for DistanceJoint to keep struct unchanged)
     let lambda = q6(-c_val / denom);
 
     bodies.apply_position_delta(ia, q6v(-n * q6(lambda * wa)));
     bodies.apply_position_delta(ib, q6v( n * q6(lambda * wb)));
 
-    let _ = dt; // keep signature stable; dt used via dt2 already
+    let _ = dt;
 }
 
 fn solve_d6(
@@ -256,22 +253,19 @@ fn solve_d6(
     dt2: Scalar,
     alpha_dt2: fn(Scalar, Scalar) -> Scalar,
 ) {
-    // World poses
     let pa = bodies.pose(j.a.0);
     let pb = bodies.pose(j.b.0);
 
-    // World joint frames
     let ra: Quat = pa.rot * j.fa.rot;
     let rb: Quat = pb.rot * j.fb.rot;
 
-    // Joint anchor points in world
-    let xa = q6v(pa.pos + pa.rot.mul_vec3a(j.fa.pos));
-    let xb = q6v(pb.pos + pb.rot.mul_vec3a(j.fb.pos));
+    // Use standard operator (*) instead of mul_vec3a
+    let xa = q6v(pa.pos + pa.rot * j.fa.pos);
+    let xb = q6v(pb.pos + pb.rot * j.fb.pos);
 
-    // Axes in world from A joint frame (quantized + normalized)
-    let ax = normalize_q6(ra.mul_vec3a(Vec3::X));
-    let ay = normalize_q6(ra.mul_vec3a(Vec3::Y));
-    let az = normalize_q6(ra.mul_vec3a(Vec3::Z));
+    let ax = normalize_q6(ra * Vec3::X);
+    let ay = normalize_q6(ra * Vec3::Y);
+    let az = normalize_q6(ra * Vec3::Z);
     let axes = [ax, ay, az];
 
     let wa = q6(bodies.inv_mass_of(j.a.0));
@@ -280,7 +274,6 @@ fn solve_d6(
     let iaw: Mat3 = bodies.inv_inertia_world(j.a.0);
     let ibw: Mat3 = bodies.inv_inertia_world(j.b.0);
 
-    // Translation rows: coordinate along axis = (xb - xa)·u
     let d = q6v(xb - xa);
 
     for i in 0..3 {
@@ -291,8 +284,6 @@ fn solve_d6(
         if u == Vec3::ZERO { continue; }
 
         let coord = q6(d.dot(u));
-
-        // Determine constraint error C and target for this row
         let mut target_pos = 0.0f32;
         let mut c_err: Option<f32> = None;
 
@@ -300,13 +291,12 @@ fn solve_d6(
             let lo = q6(lim.min);
             let hi = q6(lim.max);
             if coord < lo {
-                c_err = Some(q6(coord - lo)); // below min -> push up to lo
+                c_err = Some(q6(coord - lo));
                 target_pos = lo;
             } else if coord > hi {
-                c_err = Some(q6(coord - hi)); // above max -> push down to hi
+                c_err = Some(q6(coord - hi));
                 target_pos = hi;
             } else {
-                // within limits: only act if there's a drive (servo)
                 c_err = None;
                 target_pos = coord;
             }
@@ -320,7 +310,6 @@ fn solve_d6(
                 }
                 c_err = Some(q6(coord - target_pos));
             } else {
-                // velocity-mode in a positional XPBD solve: treat as a bias term (hack but deterministic)
                 if c_err.is_none() {
                     c_err = Some(q6(coord - 0.0));
                     target_pos = 0.0;
@@ -328,10 +317,8 @@ fn solve_d6(
             }
         }
 
-        // If we’re within limits and no drive, skip the row
         let Some(mut c) = c_err else { continue; };
 
-        // Velocity-bias term (only used for vel_mode drives)
         let mut bias_vel = 0.0f32;
         if let Some(drive) = row.drive {
             if drive.vel_mode {
@@ -339,11 +326,9 @@ fn solve_d6(
             }
         }
 
-        // Jacobians
         let ra_u = q6v((xa - pa.pos).cross(u));
         let rb_u = q6v((xb - pb.pos).cross(u));
 
-        // Effective mass
         let w_rot_a = q6(ra_u.dot(iaw * ra_u));
         let w_rot_b = q6(rb_u.dot(ibw * rb_u));
         let w = q6(wa + wb + w_rot_a + w_rot_b);
@@ -352,26 +337,22 @@ fn solve_d6(
         let denom = q6(w + alpha);
         if denom <= 0.0 { continue; }
 
-        // XPBD delta_lambda
-        // C_eff = C + bias*dt
         c = q6(c + q6(bias_vel * dt));
         let lambda_old = q6(row.lambda_acc);
         let dl = q6(-(c + q6(alpha * lambda_old)) / denom);
         row.lambda_acc = q6(lambda_old + dl);
 
-        // Apply corrections with delta lambda
         bodies.apply_position_delta(j.a.0, q6v(-u * q6(dl * wa)));
         bodies.apply_position_delta(j.b.0, q6v( u * q6(dl * wb)));
 
         bodies.apply_orientation_delta(j.a.0, q6v(-(iaw * ra_u) * dl));
         bodies.apply_orientation_delta(j.b.0, q6v( (ibw * rb_u) * dl));
 
-        let _ = target_pos; // kept to make intent obvious; used via c_err in servo path
+        let _ = target_pos;
     }
 
-    // Rotation rows: small-angle error from ra to rb, projected on u
-    let mut q_err = ra.conjugate() * rb; // A->B in joint space
-    if q_err.w < 0.0 { q_err = -q_err; } // canonicalize sign
+    let mut q_err = ra.conjugate() * rb;
+    if q_err.w < 0.0 { q_err = -q_err; }
 
     let e = q6v(2.0 * Vec3::new(q_err.x, q_err.y, q_err.z));
 
@@ -383,9 +364,8 @@ fn solve_d6(
         if u == Vec3::ZERO { continue; }
 
         let angle = q6(e.dot(u));
-
         let mut target_ang = 0.0f32;
-        let mut c_err: Option<f32> = Some(q6(angle - 0.0)); // default lock-to-zero
+        let mut c_err: Option<f32> = Some(q6(angle - 0.0));
 
         if let Some(lim) = row.limit {
             let lo = q6(lim.min);
@@ -397,7 +377,7 @@ fn solve_d6(
                 c_err = Some(q6(angle - hi));
                 target_ang = hi;
             } else {
-                c_err = None; // within range => no correction unless drive
+                c_err = None;
                 target_ang = angle;
             }
         }
@@ -426,14 +406,12 @@ fn solve_d6(
             }
         }
 
-        // Effective mass for angular row
         let w = q6(u.dot(iaw * u) + u.dot(ibw * u));
         let alpha = alpha_dt2(row.compliance, dt2);
         let denom = q6(w + alpha);
         if denom <= 0.0 { continue; }
 
         c = q6(c + q6(bias_vel * dt));
-
         let lambda_old = q6(row.lambda_acc);
         let dl = q6(-(c + q6(alpha * lambda_old)) / denom);
         row.lambda_acc = q6(lambda_old + dl);
@@ -444,8 +422,6 @@ fn solve_d6(
         let _ = target_ang;
     }
 }
-
-/* ─────────────────────────  Re-exports for world crate convenience ───────────── */
 
 pub use D6Axis as D6AxisRow;
 pub use Generic6Dof as D6Joint;

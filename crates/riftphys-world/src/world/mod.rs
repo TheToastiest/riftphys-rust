@@ -8,5 +8,8 @@ pub mod debug;
 pub mod harness;
 pub mod provenance;
 pub mod world;
+pub mod pipeline;
+pub mod islands;
+pub mod sleep;
 
-pub use world::{World, WorldBuilder, Collider, RayHit, SweepHit};
+pub use world::{World, WorldBuilder, Collider, RayHit, SweepHit, PlayerController};
